@@ -8,12 +8,30 @@ export {
 	parseMcpConfig,
 	resolveMcpConfigPath,
 } from "./config.js";
-export type { McpConfig, McpServerConfig } from "./config.js";
 export type {
-	McpContentBlock,
-	McpToolDefinition,
-	McpToolResult,
-} from "./types.js";
+	McpConfig,
+	McpOAuthConfig,
+	McpServerConfig,
+} from "./config.js";
+export {
+	loadMcpTokens,
+	MCP_ACCESS_TOKEN_ENV,
+	parseMcpTokenStore,
+	resolveMcpTokenPath,
+	saveMcpTokens,
+	spawnEnvWithToken,
+	storeMcpToken,
+} from "./tokens.js";
+export type { McpStoredToken, McpTokenStore } from "./tokens.js";
+export {
+	buildAuthorizeUrl,
+	exchangeCode,
+	extractCode,
+	makePkcePair,
+	startOauth,
+} from "./oauth.js";
+export type { OauthFlow, StartOauthOptions } from "./oauth.js";
+export { parseCliArgs, runCli } from "./cli.js";
 import { createMcpExtension, type McpWiring } from "./extension.js";
 
 /**

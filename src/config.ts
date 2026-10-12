@@ -29,6 +29,23 @@ export interface McpServerConfig {
 	readonly env?: Readonly<Record<string, string>>;
 	/** Skip this server entirely (default false). */
 	readonly disabled?: boolean;
+	/** OAuth (T3c): when present, `sigrun-ext-mcp oauth <name>` can mint a
+	 * token and spawn injects it as `MCP_ACCESS_TOKEN` (see tokens.ts). */
+	readonly oauth?: McpOAuthConfig;
+}
+
+/** OAuth block for one server: how to run the authorization-code flow. */
+export interface McpOAuthConfig {
+	/** The AS's authorize endpoint (GET; the user opens this in a browser). */
+	readonly authorizeUrl: string;
+	/** The AS's token endpoint (POST; the CLI exchanges the code here). */
+	readonly tokenUrl: string;
+	/** The registered client id. */
+	readonly clientId: string;
+	/** Requested scopes (optional). */
+	readonly scopes?: readonly string[];
+	/** PKCE method (optional; only "S256" is implemented — and always used). */
+	readonly codeChallengeMethod?: string;
 }
 
 /** The parsed `mcp.json` body. */
@@ -109,6 +126,10 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 				`mcp config ${source}: server "${name}" disabled must be a boolean`,
 			);
 		}
+		const oauth =
+			entry.oauth === undefined
+				? undefined
+				: parseOauthEntry(entry.oauth, source, name);
 		servers[name] = {
 			command: entry.command,
 			args: entry.args,
@@ -116,9 +137,61 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 				? {}
 				: { env: entry.env as Record<string, string> }),
 			...(entry.disabled === undefined ? {} : { disabled: entry.disabled }),
+			...(oauth === undefined ? {} : { oauth }),
 		};
 	}
 	return { servers };
+}
+
+/** Parse one server's oauth block. Fail-loud on a wrong shape: a
+ * half-configured block is a config error, not a silently-ignored field. */
+function parseOauthEntry(
+	value: unknown,
+	source: string,
+	name: string,
+): McpOAuthConfig {
+	if (!isRecord(value)) {
+		throw new Error(
+			`mcp config ${source}: server "${name}" oauth must be an object`,
+		);
+	}
+	if (
+		typeof value.authorizeUrl !== "string" ||
+		typeof value.tokenUrl !== "string" ||
+		typeof value.clientId !== "string"
+	) {
+		throw new Error(
+			`mcp config ${source}: server "${name}" oauth needs string "authorizeUrl", "tokenUrl" and "clientId"`,
+		);
+	}
+	if (
+		value.scopes !== undefined &&
+		(!Array.isArray(value.scopes) ||
+			value.scopes.some((scope) => typeof scope !== "string"))
+	) {
+		throw new Error(
+			`mcp config ${source}: server "${name}" oauth scopes must be a string[]`,
+		);
+	}
+	if (
+		value.codeChallengeMethod !== undefined &&
+		typeof value.codeChallengeMethod !== "string"
+	) {
+		throw new Error(
+			`mcp config ${source}: server "${name}" oauth codeChallengeMethod must be a string`,
+		);
+	}
+	return {
+		authorizeUrl: value.authorizeUrl,
+		tokenUrl: value.tokenUrl,
+		clientId: value.clientId,
+		...(value.scopes === undefined
+			? {}
+			: { scopes: value.scopes as string[] }),
+		...(value.codeChallengeMethod === undefined
+			? {}
+			: { codeChallengeMethod: value.codeChallengeMethod }),
+	};
 }
 
 /**

@@ -12,6 +12,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { Readable, Writable } from "node:stream";
+import { spawnEnvWithToken } from "./tokens.js";
 import type {
 	McpServerConfig,
 	McpToolDefinition,
@@ -244,7 +245,9 @@ export async function connectMcpServer(
 ): Promise<McpClient> {
 	const child = spawn(config.command, [...config.args], {
 		stdio: ["pipe", "pipe", "pipe"],
-		env: { ...process.env, ...config.env },
+		// Token injection (ruling 3): a server with an oauth block AND a stored
+		// token gets it as MCP_ACCESS_TOKEN, merged over the server's own env.
+		env: { ...process.env, ...spawnEnvWithToken(name, config) },
 	});
 	const client = new McpClient(name, child);
 	try {
