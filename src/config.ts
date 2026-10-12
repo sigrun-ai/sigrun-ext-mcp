@@ -181,6 +181,16 @@ function parseOauthEntry(
 			`mcp config ${source}: server "${name}" oauth codeChallengeMethod must be a string`,
 		);
 	}
+	// Only S256 is implemented; a config naming anything else would silently
+	// send S256 anyway — fail loudly instead (config lies must not pass).
+	if (
+		value.codeChallengeMethod !== undefined &&
+		value.codeChallengeMethod !== "S256"
+	) {
+		throw new Error(
+			`mcp config ${source}: server "${name}" oauth codeChallengeMethod must be "S256" (the only implemented method)`,
+		);
+	}
 	return {
 		authorizeUrl: value.authorizeUrl,
 		tokenUrl: value.tokenUrl,

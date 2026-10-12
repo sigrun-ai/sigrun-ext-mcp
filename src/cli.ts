@@ -18,7 +18,7 @@
  */
 
 import { createInterface } from "node:readline";
-import { loadMcpConfig, MCP_CONFIG_ENV } from "./config.js";
+import { loadMcpConfig, MCP_CONFIG_ENV, type McpConfig } from "./config.js";
 import { startOauth } from "./oauth.js";
 import { resolveMcpTokenPath } from "./tokens.js";
 
@@ -55,6 +55,18 @@ export function parseCliArgs(argv: readonly string[]): {
 	return { command: "oauth", server: positional[0], paste };
 }
 
+/** Load the config, turning a malformed config into exit-1 (not a crash). */
+function loadMcpConfigSafe(stderr: NodeJS.WriteStream): McpConfig {
+	try {
+		return loadMcpConfig();
+	} catch (cause) {
+		stderr.write(
+			`error: ${cause instanceof Error ? cause.message : String(cause)}\n`,
+		);
+		process.exit(1);
+	}
+}
+
 /** The CLI body (exported for tests); returns the process exit code. */
 export async function runCli(
 	argv: readonly string[],
@@ -73,7 +85,7 @@ export async function runCli(
 		);
 		return 1;
 	}
-	const config = loadMcpConfig();
+	const config = loadMcpConfigSafe(io.stderr);
 	const server = config.servers[parsed.server];
 	if (server === undefined) {
 		io.stderr.write(
@@ -99,9 +111,11 @@ export async function runCli(
 	);
 
 	// The paste fallback: every stdin line is fed to the flow; first arrival
-	// wins (the loopback listener or the paste settles the code).
+	// wins (the loopback listener or the paste settles the code). pasteUrl
+	// never throws (lines with no code are ignored), so the readline handler
+	// cannot crash the bin.
 	const lines = createInterface({ input: process.stdin });
-	lines.on("line", (line) => {
+	lines.on("line", (line: string) => {
 		const trimmed = line.trim();
 		if (trimmed !== "") flow.pasteUrl(trimmed);
 	});

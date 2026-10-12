@@ -205,8 +205,7 @@ test("a stub OAuth flow completes with a pasted URL (the testable line)", async 
 	}
 });
 
-test("the loopback listener also settles the flow (first arrival wins)", async () => {
-	const as = await stubAs("listener-code");
+test("the loopback listener also settles the flow (first arrival wins)", async () => {	const as = await stubAs("listener-code");
 	const { dir, env } = await oauthConfigDir(as.url);
 	try {
 		const config = parseMcpConfig(
@@ -299,6 +298,35 @@ test("a stored token is injected into the child env; absent token is not", async
 		// compat): its env passes through even though a token exists.
 		const plain = { command: "x", args: [] } as typeof server;
 		expect(spawnEnvWithToken("stub", plain, env)).toEqual({});
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a pasted URL with an AS error fails the flow fast; junk pastes are ignored", async () => {
+	const as = await stubAs("irrelevant");
+	const { dir, env } = await oauthConfigDir(as.url);
+	try {
+		const config = parseMcpConfig(
+			await (await import("node:fs/promises")).readFile(
+				env[MCP_CONFIG_ENV],
+				"utf8",
+			),
+			env[MCP_CONFIG_ENV]!,
+		);
+		const flow = await startOauth("stub", config.servers.stub.oauth!, {
+			env,
+			timeoutMs: 10_000,
+		});
+
+		// A junk line (no code) is ignored — the user may paste again.
+		flow.pasteUrl("not a url at all");
+		flow.pasteUrl("http://127.0.0.1:1/callback?state=xyz");
+
+		// An AS error parameter fails the flow instead of hanging to timeout.
+		flow.pasteUrl(`${flow.redirectUri}?error=access_denied`);
+		await expect(flow.done).rejects.toThrow(/access_denied/);
+		flow.stop();
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

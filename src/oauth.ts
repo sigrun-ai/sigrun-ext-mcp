@@ -16,11 +16,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { McpOAuthConfig } from "./config.js";
-import {
-	resolveMcpTokenPath,
-	storeMcpToken,
-	type McpStoredToken,
-} from "./tokens.js";
+import { storeMcpToken, type McpStoredToken } from "./tokens.js";
 
 /** The paste-the-URL flow's interactive handles (what `runOauth` returns). */
 export interface OauthFlow {
@@ -28,9 +24,12 @@ export interface OauthFlow {
 	readonly authorizeUrl: string;
 	/** The loopback redirect_uri (`http://127.0.0.1:<port>/callback`). */
 	readonly redirectUri: string;
-	/** Feed a pasted redirected URL (the paste fallback). Resolves the flow. */
+	/** Feed a pasted redirected URL (the paste fallback). Extracts the code;
+	 * a URL with no code is IGNORED (the user may paste again); a URL
+	 * carrying an AS `error` parameter FAILS the flow fast. */
 	pasteUrl(url: string): void;
-	/** Rejects the flow: first arrival wins (listener hit / paste / error). */
+	/** Settles with the STORED token, or rejects on AS error / exchange
+	 * failure / timeout. */
 	readonly done: Promise<McpStoredToken>;
 	/** Tear down the listener (idempotent; no-op after the flow settles). */
 	stop(): void;
@@ -212,8 +211,10 @@ export async function startOauth(
 	// The code settlement: the listener hit and the paste handler both feed
 	// this seam; the first caller wins (later calls are ignored).
 	let settleCode: ((code: string) => void) | undefined;
-	const codeReceived = new Promise<string>((resolve) => {
+	let failFlow: ((error: Error) => void) | undefined;
+	const codeReceived = new Promise<string>((resolve, reject) => {
 		settleCode = resolve;
+		failFlow = reject;
 	});
 
 	// Loopback listener (RFC 8252): random port on 127.0.0.1, one route.
@@ -232,19 +233,24 @@ export async function startOauth(
 			if (key === "error") oauthError = value;
 		}
 		res.writeHead(200, { "content-type": "text/plain" });
-		res.end(
-			oauthError === undefined && code !== undefined
-				? "Authorization complete. You can close this tab."
-				: "Missing code in the redirect.",
-		);
-		if (code !== undefined && oauthError === undefined) settleCode?.(code);
+		if (oauthError !== undefined) {
+			res.end(`Authorization failed: ${oauthError}`);
+			failFlow?.(new Error(`authorization server returned error: ${oauthError}`));
+			return;
+		}
+		if (code !== undefined) {
+			res.end("Authorization complete. You can close this tab.");
+			settleCode?.(code);
+		} else {
+			res.end("Missing code in the redirect.");
+		}
 	});
 	const listening = new Promise<number>((resolve, reject) => {
 		server.once("error", reject);
 		server.listen(0, "127.0.0.1", () => {
 			const address = server.address();
-			if (address === null || typeof address === "object") {
-				resolve((address as { port: number }).port);
+			if (address !== null && typeof address === "object") {
+				resolve(address.port);
 			} else {
 				reject(new Error("loopback listener did not report a port"));
 			}
@@ -279,17 +285,31 @@ export async function startOauth(
 		return token;
 	})();
 
-	// Settle closes the listener no matter which path won.
+	// Settle closes the listener no matter which path won. NOTE: the rejection
+	// is HANDLED here (both callbacks), so the derived promise never becomes an
+	// unhandled rejection when the flow fails.
 	const stop = () => server.close();
-	void done.finally(stop);
+	void done.then(stop, stop);
 
 	return {
 		authorizeUrl,
 		redirectUri,
 		pasteUrl(url: string) {
-			const extracted = extractCode(url);
+			let extracted: ReturnType<typeof extractCode>;
+			try {
+				extracted = extractCode(url);
+			} catch {
+				// A pasted line with no code (a stray paste, a log line): ignore —
+				// the user may paste the right URL next. Never throw: this runs in
+				// the CLI's readline handler, where a throw would crash the bin.
+				return;
+			}
 			if ("error" in extracted) {
-				// The AS redirected with an error parameter: nothing to paste.
+				// The AS redirected with an error parameter: fail fast instead
+				// of hanging until the timeout.
+				failFlow?.(
+					new Error(`authorization server returned error: ${extracted.error}`),
+				);
 				return;
 			}
 			settleCode?.(extracted.code);
