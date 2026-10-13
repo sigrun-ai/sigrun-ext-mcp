@@ -34,7 +34,13 @@ import {
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { connectMcpServer, type McpClient } from "./client.js";
-import { loadMcpConfig } from "./config.js";
+import {
+	loadMcpConfig,
+	resolveToolExposure,
+	serverEnabled,
+	type McpExposure,
+	type McpServerConfig,
+} from "./config.js";
 import type {
 	McpContentBlock,
 	McpToolDefinition,
@@ -74,6 +80,8 @@ function mcpTool(
 	serverName: string,
 	tool: McpToolDefinition,
 	client: McpClient,
+	exposure: McpExposure,
+	timeoutSeconds: number | undefined,
 ): ToolRegistration {
 	// MCP advertises a plain JSON Schema for arguments. pi-durable validates
 	// with TypeBox's Compile, which accepts plain JSON Schema objects; pass it
@@ -87,6 +95,17 @@ function mcpTool(
 			: { type: "object" }
 	) as unknown as TSchema;
 	const toolName = `${serverName}/${tool.name}`;
+	// The exposure mapping onto pi-durable 1.2.0 (spec slice 3):
+	//   codemode → callers: ["tools"] (scripts only, never model-offered);
+	//   deferred → deferred: true (invisible until tool_search loads it);
+	//   direct   → normal registration (model-offered when in the tool set);
+	//   hidden   → never registered (the caller checks and skips).
+	const exposureFlags =
+		exposure === "codemode"
+			? { callers: ["tools"] as const }
+			: exposure === "deferred"
+					? { deferred: true as const }
+					: {};
 	return defineTool({
 		name: toolName,
 		description:
@@ -96,10 +115,13 @@ function mcpTool(
 		parameters: Type.Unsafe(parameters),
 		// A tools/call round-trip is external I/O; never rerun on recovery.
 		replay: "unsafe",
+		...exposureFlags,
 		async execute(args) {
-			const result: McpToolResult = await client.callTool(tool.name, {
-				...(args as Record<string, unknown>),
-			});
+			const result: McpToolResult = await client.callTool(
+				tool.name,
+				{ ...(args as Record<string, unknown>) },
+				timeoutSeconds,
+			);
 			const blocks = result.content ?? [];
 			const content = blocks.length > 0 ? blocks.map(toContent) : [];
 			return {
@@ -129,7 +151,7 @@ export function createMcpExtension(): McpWiring {
 	// proceed. A disabled server is skipped before it ever spawns.
 	const pending: Promise<void>[] = [];
 	for (const [name, server] of Object.entries(config.servers)) {
-		if (server.disabled === true) continue;
+		if (!serverEnabled(server)) continue;
 		pending.push(
 			(async () => {
 				let client: McpClient;
@@ -142,18 +164,22 @@ export function createMcpExtension(): McpWiring {
 						}`,
 					);
 					return;
-				}
+			}
 				if (closed) {
 					client.close();
 					return;
-				}
+			}
 				clients.set(name, client);
 				try {
 					const discovered = await client.listTools();
-					for (const tool of discovered) {
-						tools.push(mcpTool(name, tool, client));
-					}
-				} catch (cause) {
+				for (const tool of discovered) {
+					const exposure = resolveToolExposure(server, tool.name);
+					if (exposure === "hidden") continue; // not registered
+					tools.push(
+						mcpTool(name, tool, client, exposure, server.timeout),
+					);
+				}
+			} catch (cause) {
 					clients.delete(name);
 					client.close();
 					console.warn(

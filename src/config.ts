@@ -19,6 +19,92 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 
+/** How one tool's registration reaches callers (pi-durable 1.2.0):
+ * `codemode` → `callers: ["tools"]` (scripts only, never model-offered),
+ * `deferred` → `deferred: true` (model-callable once tool_search loads it),
+ * `direct` → normal registration (model-offered),
+ * `hidden` → not registered at all. */
+export type McpExposure = "codemode" | "deferred" | "direct" | "hidden";
+
+/** Config-level exposure words: the four real ones plus pi's `codemode-deferred`
+ * alias (normalized to "codemode" at parse time — pi compat). */
+const EXPOSURE_WORDS = [
+	"codemode",
+	"deferred",
+	"direct",
+	"hidden",
+	"codemode-deferred",
+] as const;
+
+/** The server-default exposure (spec slice 3: the default flip — a server
+ * with no `exposure` registers its tools script-only, NOT model-offered;
+ * `"exposure": "direct"` restores the pre-1.2.0 behavior). */
+export const DEFAULT_EXPOSURE: McpExposure = "codemode";
+
+/** Default per-request wire timeout in seconds (config `timeout` overrides). */
+export const DEFAULT_TIMEOUT_SECONDS = 60;
+
+/** Parse one exposure word; the alias normalizes to "codemode". */
+function parseExposure(
+	value: unknown,
+	source: string,
+	where: string,
+): McpExposure {
+	if (typeof value !== "string" || !EXPOSURE_WORDS.includes(value as never)) {
+		throw new Error(
+			`mcp config ${source}: ${where} exposure must be one of ${
+				EXPOSURE_WORDS.map((word) => JSON.stringify(word)).join(", ")
+			}`,
+		);
+	}
+	const word = value as (typeof EXPOSURE_WORDS)[number];
+	return word === "codemode-deferred" ? "codemode" : word;
+}
+
+/** Glob match for `toolExposure` patterns: `*` matches any run of
+ * characters (including `/`); a pattern without `*` is exact-only. */
+function globMatch(pattern: string, name: string): boolean {
+	const parts = pattern.split("*");
+	if (parts.length === 1) return pattern === name;
+	if (!name.startsWith(parts[0]!)) return false;
+	let index = parts[0]!.length;
+	for (let i = 1; i < parts.length; i++) {
+		const part = parts[i]!;
+		const last = i === parts.length - 1;
+		const found = last ? name.lastIndexOf(part) : name.indexOf(part, index);
+		if (found < 0 || found < index) return false;
+		index = found + part.length;
+		if (last && index !== name.length) return false;
+	}
+	return true;
+}
+
+/** Resolve one discovered tool's exposure: an exact `toolExposure` name wins
+ * over patterns; among patterns the FIRST matching one in config order wins
+ * (pi's precedence); otherwise the server default (default "codemode"). */
+export function resolveToolExposure(
+	server: McpServerConfig,
+	toolName: string,
+): McpExposure {
+	const overrides = server.toolExposure;
+	if (overrides !== undefined) {
+		const exact = overrides[toolName];
+		if (exact !== undefined) return exact;
+		for (const [pattern, exposure] of Object.entries(overrides)) {
+			if (!pattern.includes("*")) continue;
+			if (globMatch(pattern, toolName)) return exposure;
+		}
+	}
+	return server.exposure ?? DEFAULT_EXPOSURE;
+}
+
+/** Whether a configured server participates at all: `enabled: false` and
+ * `disabled: true` both skip it (parse-time validation rejects
+ * contradictions, so either false simply means off). */
+export function serverEnabled(server: McpServerConfig): boolean {
+	return server.enabled !== false && server.disabled !== true;
+}
+
 /** One configured MCP server (stdio transport). */
 export interface McpServerConfig {
 	/** The executable to spawn. */
@@ -29,6 +115,15 @@ export interface McpServerConfig {
 	readonly env?: Readonly<Record<string, string>>;
 	/** Skip this server entirely (default false). */
 	readonly disabled?: boolean;
+	/** Skip this server entirely (default true; contradicts `disabled`). */
+	readonly enabled?: boolean;
+	/** Server-default registration exposure (default "codemode"). */
+	readonly exposure?: McpExposure;
+	/** Per-tool exposure overrides: exact tool names beat patterns; the
+	 * first matching `*`-pattern in config order wins. */
+	readonly toolExposure?: Readonly<Record<string, McpExposure>>;
+	/** Per-request wire timeout in seconds (default 60). */
+	readonly timeout?: number;
 	/** OAuth (T3c): when present, `sigrun-ext-mcp oauth <name>` can mint a
 	 * token and spawn injects it as `MCP_ACCESS_TOKEN` (see tokens.ts). */
 	readonly oauth?: McpOAuthConfig;
@@ -124,7 +219,54 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 		if (entry.disabled !== undefined && typeof entry.disabled !== "boolean") {
 			throw new Error(
 				`mcp config ${source}: server "${name}" disabled must be a boolean`,
+		);
+		}
+		if (entry.enabled !== undefined && typeof entry.enabled !== "boolean") {
+			throw new Error(
+				`mcp config ${source}: server "${name}" enabled must be a boolean`,
 			);
+		}
+		// enabled/disabled must agree when both present: a server that is
+		// simultaneously on and off is a config lie, not a default to guess.
+		if (
+				entry.enabled !== undefined &&
+				entry.disabled !== undefined &&
+				entry.enabled === entry.disabled
+		) {
+			throw new Error(
+				`mcp config ${source}: server "${name}" enabled and disabled contradict each other`,
+			);
+		}
+		if (entry.timeout !== undefined) {
+			if (
+					typeof entry.timeout !== "number" ||
+				!Number.isFinite(entry.timeout) ||
+				entry.timeout <= 0
+			) {
+				throw new Error(
+					`mcp config ${source}: server "${name}" timeout must be a positive number of seconds`,
+			);
+			}
+		}
+		const exposure =
+			entry.exposure === undefined
+				? undefined
+				: parseExposure(entry.exposure, source, `server "${name}"`);
+		let toolExposure: Record<string, McpExposure> | undefined;
+		if (entry.toolExposure !== undefined) {
+			if (!isRecord(entry.toolExposure)) {
+				throw new Error(
+					`mcp config ${source}: server "${name}" toolExposure must be an object mapping tool names or patterns to exposure words`,
+				);
+			}
+			toolExposure = {};
+			for (const [key, value] of Object.entries(entry.toolExposure)) {
+				toolExposure[key] = parseExposure(
+					value,
+					source,
+					`server "${name}" toolExposure "${key}"`,
+				);
+			}
 		}
 		const oauth =
 			entry.oauth === undefined
@@ -137,6 +279,10 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 				? {}
 				: { env: entry.env as Record<string, string> }),
 			...(entry.disabled === undefined ? {} : { disabled: entry.disabled }),
+			...(entry.enabled === undefined ? {} : { enabled: entry.enabled }),
+			...(exposure === undefined ? {} : { exposure }),
+			...(toolExposure === undefined ? {} : { toolExposure }),
+			...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
 			...(oauth === undefined ? {} : { oauth }),
 		};
 	}
