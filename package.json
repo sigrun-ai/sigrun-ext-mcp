@@ -36,5 +36,14 @@
 		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3"
-	}
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "github",
+		"url": "git+https://github.com/sigrun-ai/sigrun-ext-mcp.git"
+	},
+	"bugs": {
+		"url": "https://github.com/sigrun-ai/sigrun-ext-mcp/issues"
+	},
+	"homepage": "https://github.com/sigrun-ai/sigrun-ext-mcp#readme"
 }

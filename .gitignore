@@ -1,2 +1,2 @@
 node_modules/
-dist/
+dist/\n# agent/dev artifacts\n.superpowers/\nREPORT.md\n.vitest/\n*.tgz\n.pi/\ncoverage/\n.env\n.vcc/\n*.pem\n

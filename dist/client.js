@@ -1,0 +1,279 @@
+/**
+ * Minimal hand-rolled MCP stdio client (ruling 3): JSON-RPC 2.0 over
+ * newline-delimited stdio, no pi-mcp dependency.
+ *
+ * Lifecycle: spawn → `initialize` handshake (protocolVersion "2025-06-18",
+ * clientInfo, capabilities) → `notifications/initialized` → `tools/list`
+ * (discovery) → `tools/call` (execution). Requests correlate by id; the
+ * response frame's `id` must match a pending request (a notification is
+ * never a reply). A spawn failure or handshake failure rejects `connect`,
+ * never affecting any other server (per-server isolation).
+ *
+ * Per-request timeout (codemode parity, spec slice 3): every request REJECTS
+ * at its deadline (default 60s; config `timeout` per server) instead of
+ * awaiting a hung server forever. A `notifications/progress` frame naming a
+ * pending request's id (sent as the request's `progressToken`) RESETS that
+ * request's deadline — a server that keeps reporting progress stays alive
+ * as long as it works. A timeout rejects the call but never kills the child
+ * (per-server isolation: the next request gets a fresh chance).
+ */
+import { spawn } from "node:child_process";
+import { spawnEnvWithToken } from "./tokens.js";
+import { DEFAULT_TIMEOUT_SECONDS } from "./config.js";
+const MCP_PROTOCOL_VERSION = "2025-06-18";
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+/** One connected MCP server: a live child process speaking JSON-RPC. */
+export class McpClient {
+    #process;
+    #stdin;
+    #stdout;
+    #name;
+    #nextId = 1;
+    #buffer = "";
+    #pending = new Map();
+    #exitError;
+    /** True when the child exited through an intentional close(). */
+    #exitClean = false;
+    #exitWaiters = [];
+    #closed = false;
+    /** @internal constructed by {@link connectMcpServer}. */
+    constructor(name, child) {
+        this.#name = name;
+        this.#process = child;
+        if (child.stdin === null || child.stdout === null) {
+            throw new Error(`mcp server "${name}" spawned without stdio`);
+        }
+        this.#stdin = child.stdin;
+        this.#stdout = child.stdout;
+        this.#stdout.setEncoding("utf8");
+        this.#stdout.on("data", (chunk) => this.#onData(chunk));
+        this.#stdout.on("error", () => this.#failExits()); // closed pipe: ignore
+        // A broken stdin pipe (server died) must not crash the host with an
+        // unhandled stream error; surface it as the exit error instead.
+        this.#stdin.on("error", () => this.#failExits());
+        this.#process.on("error", (error) => this.#setExitError(error));
+        this.#process.on("exit", () => this.#setExitError(undefined));
+    }
+    #onData(chunk) {
+        this.#buffer += chunk;
+        for (;;) {
+            const newline = this.#buffer.indexOf("\n");
+            if (newline < 0)
+                return;
+            const line = this.#buffer.slice(0, newline).trim();
+            this.#buffer = this.#buffer.slice(newline + 1);
+            if (line === "")
+                continue;
+            this.#onLine(line);
+        }
+    }
+    #onLine(line) {
+        let frame;
+        try {
+            frame = JSON.parse(line);
+        }
+        catch {
+            return; // a non-JSON line (server chatter) is not a protocol reply
+        }
+        if (frame.id === undefined || frame.id === null) {
+            // A frame with no id is a server-initiated NOTIFICATION (a reply
+            // always carries the request's id). A `notifications/progress`
+            // frame whose `progressToken` names a PENDING request resets that
+            // request's deadline — the server is alive and still working, so
+            // a long job must not die at the deadline while it keeps
+            // reporting progress. Every other notification is ignored.
+            if (frame.method === "notifications/progress" &&
+                isRecord(frame.params) &&
+                typeof frame.params.progressToken === "number") {
+                this.#pending.get(frame.params.progressToken)?.resetTimeout();
+            }
+            return;
+        }
+        // A reply: its id must be one of ours (a notification is never a
+        // reply, and a non-numeric id is not one of our requests).
+        if (typeof frame.id !== "number")
+            return;
+        const pending = this.#pending.get(frame.id);
+        if (pending === undefined)
+            return;
+        this.#pending.delete(frame.id);
+        pending.clearTimeout();
+        if (frame.error !== undefined) {
+            pending.reject(new Error(`mcp server "${this.#name}" ${frame.error.message} (code ${frame.error.code})`));
+        }
+        else {
+            pending.resolve(frame.result);
+        }
+    }
+    #setExitError(error) {
+        if (this.#exitError !== undefined)
+            return;
+        // An INTENTIONAL close() is a clean shutdown: resolve waiters with no
+        // error (a close is a shutdown, never a failure).
+        if (this.#closed)
+            this.#exitClean = true;
+        const waiters = this.#exitWaiters;
+        this.#exitWaiters = [];
+        if (!this.#exitClean) {
+            this.#exitError =
+                error ??
+                    new Error(`mcp server "${this.#name}" exited early (code ${this.#process.exitCode ?? "?"})`);
+        }
+        for (const waiter of waiters)
+            waiter(this.#exitError);
+        this.#rejectPending();
+    }
+    #failExits() {
+        // stdout closed: surface as an exit error if the process has not yet
+        // reported one, so a hung `tools/call` unwinds.
+        this.#setExitError(undefined);
+    }
+    #rejectPending() {
+        const pending = [...this.#pending.values()];
+        this.#pending.clear();
+        for (const entry of pending) {
+            entry.clearTimeout();
+            entry.reject(this.#exitError ?? new Error("mcp server closed"));
+        }
+    }
+    /** Write one frame as a single newline-terminated line. */
+    #write(frame) {
+        if (this.#closed)
+            throw new Error(`mcp server "${this.#name}" is closed`);
+        this.#stdin.write(JSON.stringify(frame) + "\n");
+    }
+    /**
+     * Send a request and await its reply (id-correlated) under a per-request
+     * deadline. `timeoutSeconds` defaults to 60; the request's id doubles as
+     * the `progressToken` it advertises (in `params._meta`, per the MCP
+     * convention), so progress notifications can name it.
+     */
+    #request(method, params, timeoutSeconds) {
+        const id = this.#nextId++;
+        const seconds = timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
+        return new Promise((resolve, reject) => {
+            let timer;
+            const entry = {
+                resolve,
+                reject,
+                // A progress notification naming this request id restarts the
+                // deadline wait (the server is alive and still working).
+                resetTimeout: () => {
+                    clearTimeout(timer);
+                    timer = setTimeout(deadline, seconds * 1000);
+                },
+                clearTimeout: () => {
+                    clearTimeout(timer);
+                    timer = undefined;
+                },
+            };
+            const fail = (error) => {
+                this.#pending.delete(id);
+                entry.clearTimeout();
+                reject(error);
+            };
+            const deadline = () => fail(new Error(`mcp server "${this.#name}" ${method} timed out after ${seconds}s`));
+            this.#pending.set(id, entry);
+            try {
+                // MCP convention: the progressToken rides in params._meta (a
+                // spec-conforming server reads/echoes it from there). params is
+                // merged (never mutated) so an object request keeps its fields;
+                // a null-params request (tools/list) gets params just for _meta.
+                const requestParams = isRecord(params)
+                    ? { ...params, _meta: { progressToken: id } }
+                    : { _meta: { progressToken: id } };
+                this.#write({
+                    jsonrpc: "2.0",
+                    id,
+                    method,
+                    params: requestParams,
+                });
+            }
+            catch (error) {
+                fail(error instanceof Error ? error : new Error(String(error)));
+                return;
+            }
+            timer = setTimeout(deadline, seconds * 1000);
+            if (this.#exitError !== undefined) {
+                // The server already died: unwind this request too.
+                fail(this.#exitError);
+            }
+        });
+    }
+    /**
+     * The MCP handshake: `initialize` then `notifications/initialized`.
+     * The initialize reply is validated to carry the protocol version.
+     */
+    async handshake() {
+        const result = (await this.#request("initialize", {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: "sigrun-ext-mcp", version: "0.1.0" },
+        }, undefined));
+        if (typeof result?.protocolVersion !== "string") {
+            throw new Error(`mcp server "${this.#name}" handshake reply lacks protocolVersion`);
+        }
+        this.#write({ jsonrpc: "2.0", method: "notifications/initialized" });
+    }
+    /** Discover the server's tools (`tools/list`). */
+    async listTools() {
+        const result = (await this.#request("tools/list", undefined, undefined));
+        return result?.tools ?? [];
+    }
+    /** Execute one tool (`tools/call`); an `isError` result resolves (it is a
+     * valid tool outcome, not a protocol failure). `timeoutSeconds` caps the
+     * wait per request (default 60; progress notifications reset it). */
+    async callTool(name, args, timeoutSeconds) {
+        const result = (await this.#request("tools/call", { name, arguments: args }, timeoutSeconds));
+        if (result === undefined) {
+            throw new Error(`mcp server "${this.#name}" tools/call "${name}" returned no result`);
+        }
+        return result;
+    }
+    /** Wait for the child to exit (used by tests / shutdown checks). */
+    async exited() {
+        if (this.#exitError !== undefined)
+            return this.#exitError;
+        if (this.#process.exitCode !== null || this.#process.signalCode !== null) {
+            return undefined; // exited cleanly; already unwound pending
+        }
+        return new Promise((resolve) => {
+            this.#exitWaiters.push(resolve);
+        });
+    }
+    /** Kill the child and tear down (idempotent). */
+    close() {
+        if (this.#closed)
+            return;
+        this.#closed = true;
+        this.#process.kill("SIGTERM");
+        this.#rejectPending();
+    }
+}
+/**
+ * Spawn and connect one configured MCP server. Throws on spawn failure or a
+ * failed handshake — per-server isolation is the CALLER's policy (the
+ * extension connects all servers with `.catch` per server).
+ */
+export async function connectMcpServer(name, config) {
+    const child = spawn(config.command, [...config.args], {
+        stdio: ["pipe", "pipe", "pipe"],
+        // Token injection (ruling 3): a server with an oauth block AND a stored
+        // token gets it as MCP_ACCESS_TOKEN, merged over the server's own env.
+        env: { ...process.env, ...spawnEnvWithToken(name, config) },
+    });
+    const client = new McpClient(name, child);
+    try {
+        await client.handshake();
+    }
+    catch (cause) {
+        client.close();
+        child.kill("SIGKILL");
+        throw cause instanceof Error
+            ? cause
+            : new Error(`mcp server "${name}" handshake failed`);
+    }
+    return client;
+}
