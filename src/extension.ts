@@ -230,13 +230,10 @@ export function createMcpExtension(): McpWiring {
 	// synchronous (exit listeners cannot await), so it only SIGTERMs.
 	process.on("exit", killAll);
 
-	// Best-effort boot log (the SECTION is the real contract — it renders per
-	// request from live agent state; a factory can only log once here).
-	for (const [name] of serverExposures) {
-		console.warn(
-			`mcp server "${name}" has script-only or deferred tools; enable codemode/tool_search in Settings → default tools to reach them`,
-		);
-	}
+	// NOTE: no factory-time boot log for codemode/deferred servers —
+	// exposure is only known AFTER discovery (per-tool resolution), so a
+	// warn here could only fire on config guesses; the per-request
+	// `mcp_servers` section (below) is the real, accurate warning channel.
 
 	// The `mcp_servers` section (rev 3's corrected warning channel): renders
 	// per request from the live agent. A codemode/deferred server appears ONLY

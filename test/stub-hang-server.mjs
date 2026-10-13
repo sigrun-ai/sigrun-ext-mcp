@@ -57,9 +57,13 @@ lines.on("line", (line) => {
 	}
 	if (frame.method === "tools/call") {
 		// Never reply. In progress mode, keep notifying: the client's
-		// deadline must keep resetting while the server reports work.
+		// deadline must keep resetting while the server reports work. The
+		// token is read ONLY from params._meta.progressToken (the MCP wire
+		// placement) — NO id fallback: this stub is the interop proof that
+		// the client actually sends the token there (token === id would
+		// otherwise mask a missing token).
 		if (HANG_MODE === "progress") {
-			const token = frame.params?._meta?.progressToken ?? id;
+			const token = frame.params?._meta?.progressToken;
 			const tick = () =>
 				write({
 					jsonrpc: "2.0",

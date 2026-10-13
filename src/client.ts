@@ -28,15 +28,14 @@ import type {
 	McpToolResult,
 } from "./types.js";
 
-/** JSON-RPC 2.0 request / notification frame. */
+	/** JSON-RPC 2.0 request / notification frame. Requests carry the
+	 * progressToken inside `params._meta` (the MCP extension channel); a
+	 * server's `notifications/progress` echo carries it in `params`. */
 interface JsonRpcFrame {
 	readonly jsonrpc: "2.0";
 	readonly id?: number | string | null;
 	readonly method: string;
 	readonly params?: unknown;
-	/** Request extension channel: carries our `progressToken` so servers
-	 * can report progress on a pending request by id. */
-	readonly _meta?: unknown;
 	readonly result?: unknown;
 	readonly error?: { code: number; message: string; data?: unknown };
 }
@@ -187,8 +186,9 @@ export class McpClient {
 
 	/**
 	 * Send a request and await its reply (id-correlated) under a per-request
-	 * deadline. `timeoutSeconds` defaults to 60; the request's id is also the
-	 * `progressToken` it advertises, so progress notifications can name it.
+	 * deadline. `timeoutSeconds` defaults to 60; the request's id doubles as
+	 * the `progressToken` it advertises (in `params._meta`, per the MCP
+	 * convention), so progress notifications can name it.
 	 */
 	#request(
 		method: string,
@@ -226,12 +226,18 @@ export class McpClient {
 				);
 			this.#pending.set(id, entry);
 			try {
+				// MCP convention: the progressToken rides in params._meta (a
+				// spec-conforming server reads/echoes it from there). params is
+				// merged (never mutated) so an object request keeps its fields;
+				// a null-params request (tools/list) gets params just for _meta.
+				const requestParams = isRecord(params)
+					? { ...params, _meta: { progressToken: id } }
+					: { _meta: { progressToken: id } };
 				this.#write({
 					jsonrpc: "2.0",
 					id,
 					method,
-					params,
-					_meta: { progressToken: id },
+					params: requestParams,
 				});
 			} catch (error) {
 				fail(error instanceof Error ? error : new Error(String(error)));
