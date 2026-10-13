@@ -39,13 +39,20 @@ import {
 	resolveToolExposure,
 	serverEnabled,
 	type McpExposure,
-	type McpServerConfig,
 } from "./config.js";
+import {
+	MCP_SERVERS_SECTION_KEY,
+	partitionForSection,
+	renderMcpServersSection,
+	type McpServerSectionEntry,
+	type Reach,
+} from "./section.js";
 import type {
 	McpContentBlock,
 	McpToolDefinition,
 	McpToolResult,
 } from "./types.js";
+import type { PromptInput } from "@earendil-works/pi-durable";
 
 /** The extension's pi-durable registry name. */
 export const MCP_EXTENSION_NAME = "sigrun.mcp";
@@ -144,6 +151,12 @@ export function createMcpExtension(): McpWiring {
 	const config = loadMcpConfig();
 	const tools: ToolRegistration[] = []; // live: discovered tools land here
 	const clients = new Map<string, McpClient>();
+	/** Live per-server exposure mix: which registered tools use codemode /
+	 * deferred (the section renders from this snapshot). */
+	const serverExposures = new Map<
+		string,
+		{ codemode: boolean; deferred: boolean; description: string; count: number }
+	>();
 	let closed = false;
 
 	// Per-server isolation: each server connects independently; any failure
@@ -164,22 +177,34 @@ export function createMcpExtension(): McpWiring {
 						}`,
 					);
 					return;
-			}
+				}
 				if (closed) {
 					client.close();
 					return;
-			}
+				}
 				clients.set(name, client);
 				try {
 					const discovered = await client.listTools();
-				for (const tool of discovered) {
-					const exposure = resolveToolExposure(server, tool.name);
-					if (exposure === "hidden") continue; // not registered
-					tools.push(
-						mcpTool(name, tool, client, exposure, server.timeout),
-					);
-				}
-			} catch (cause) {
+					const mix = { codemode: false, deferred: false, count: 0 };
+					for (const tool of discovered) {
+						const exposure = resolveToolExposure(server, tool.name);
+							if (exposure === "hidden") continue; // not registered
+							if (exposure === "codemode") mix.codemode = true;
+							if (exposure === "deferred") mix.deferred = true;
+							mix.count += 1;
+						tools.push(
+								mcpTool(name, tool, client, exposure, server.timeout),
+						);
+					}
+					if (mix.count > 0 && (mix.codemode || mix.deferred)) {
+						serverExposures.set(name, {
+							...mix,
+							description: `${mix.count} tool${
+								mix.count === 1 ? "" : "s"
+							} from ${server.command} ${server.args.join(" ")}`.trim(),
+						});
+					}
+				} catch (cause) {
 					clients.delete(name);
 					client.close();
 					console.warn(
@@ -198,15 +223,64 @@ export function createMcpExtension(): McpWiring {
 		for (const client of clients.values()) client.close();
 		clients.clear();
 		tools.length = 0;
+		serverExposures.clear();
 	};
 
 	// Children must not outlive this process. The exit handler must be
 	// synchronous (exit listeners cannot await), so it only SIGTERMs.
 	process.on("exit", killAll);
 
+	// Best-effort boot log (the SECTION is the real contract — it renders per
+	// request from live agent state; a factory can only log once here).
+	for (const [name] of serverExposures) {
+		console.warn(
+			`mcp server "${name}" has script-only or deferred tools; enable codemode/tool_search in Settings → default tools to reach them`,
+		);
+	}
+
+	// The `mcp_servers` section (rev 3's corrected warning channel): renders
+	// per request from the live agent. A codemode/deferred server appears ONLY
+	// when its discovery tool (codemode / tool_search) is model-offered in
+	// THIS request; unreachable servers collapse into one notice line.
+	const mcpServersSection = (input: PromptInput): string | undefined => {
+		const reaches = new Map<string, Reach>();
+		for (const [name, mix] of serverExposures) {
+			reaches.set(
+				name,
+				mix.codemode && mix.deferred
+					? "either"
+					: mix.codemode
+						? "codemode"
+						: "tool_search",
+			);
+		}
+		const offers = new Set(input.agent.tools.map((tool) => tool.name));
+		const { listed, unreachable } = partitionForSection(reaches, offers);
+		const entries: McpServerSectionEntry[] = listed.map((name) => {
+			const mix = serverExposures.get(name)!;
+			return {
+				name,
+				description: mix.description,
+				how:
+					mix.codemode && mix.deferred
+						? "codemode scripts and the tool_search tool"
+						: mix.codemode
+							? "codemode scripts"
+							: "the tool_search tool",
+			};
+		});
+		return renderMcpServersSection(entries, unreachable.length);
+	};
+
 	const extension = defineExtension({
 		name: MCP_EXTENSION_NAME,
 		tools, // live array: the registry re-reads it on every snapshot
+		sections: [
+			{
+				key: MCP_SERVERS_SECTION_KEY,
+				render: mcpServersSection,
+			},
+		],
 	});
 
 	return {
