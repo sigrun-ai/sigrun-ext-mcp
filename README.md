@@ -89,4 +89,7 @@ Replacement works by not installing ours and installing yours: the
 name-addressed tool surface (`<server>/<tool>`) makes per-name replacement
 trivial. Co-installing this package with another that registers the same
 tool names shadows silently (pi-durable resolves cross-extension duplicates
-last-selected-wins, with no conflict signal) — **do not co-install**.
+last-selected-wins) — **do not co-install**. Sigrun's extension loader
+(made the shadowing visible at boot: it `console.warn`s once per duplicate
+tool name, naming the extensions and the last-wins resolution) but the
+warning changes nothing: last-wins stands. Replace, don't co-install.
