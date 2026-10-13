@@ -103,7 +103,7 @@ function mcpTool(
 			const blocks = result.content ?? [];
 			const content = blocks.length > 0 ? blocks.map(toContent) : [];
 			return {
-				content: content.length > 0 ? content : [
+				output: content.length > 0 ? content : [
 					{ type: "text" as const, text: JSON.stringify(result) },
 				],
 				isError: result.isError === true,
