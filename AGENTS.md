@@ -33,8 +33,6 @@ npm run build       # tsc -> dist/ (commit the result)
 - **Commit dist**: tracked by design (see the `.gitignore` comment). If
   `git status` shows `dist/` changes after a build, those belong in the
   same commit as the source change.
-- **Identity**: commits use the maintainer-configured signing key and email
-  `the maintainer commit email` (repo-local git config).
 - **Verification before completion**: `npm test` + `npm run typecheck` +
   `npm run build` with a clean `git status -- dist` before claiming done.
 - Tests own their literals: synthetic hosts (`example.invalid`), no real
