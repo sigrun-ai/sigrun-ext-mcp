@@ -4,7 +4,10 @@ Guidance for coding agents working in this repository.
 
 ## What this is
 
-MCP servers over stdio registered as `<server>/<tool>` tools (exposure: codemode
+MCP servers over stdio registered as `<server>/<tool>` tools. Per-server
+`exposure` decides how tools register (`codemode` | `deferred` | `direct` |
+`hidden`); an OAuth token store backs servers that need browser authorization
+(see README.md for the exact shapes).
 
 A [sigrun](https://github.com/sigrun-ai/sigrun) extension (pi-durable
 loader contract): a default export or named factory consumed by sigrun's
@@ -13,7 +16,11 @@ extension loader. Small, single-purpose, no cross-extension coupling.
 ## Layout
 
 - `src/index.ts` — public surface (re-exports the factory).
-- `src/deferred|direct|hidden), OAuth token store|client.ts` — the implementation.
+- `src/extension.ts` — the implementation (server wiring + tool registration).
+- `src/client.ts` — minimal hand-rolled MCP stdio client (JSON-RPC 2.0).
+- `src/config.ts` — per-server config (`exposure`, `toolExposure`, `timeout`).
+- `src/oauth.ts` + `src/tokens.ts` — OAuth authorization-code flow + token store.
+- `src/cli.ts` / `src/bin.ts` — the `sigrun-ext-mcp oauth <server>` CLI bin.
 - `test/` — vitest suites.
 - `dist/` — **committed build output** (git-source installs load
   `dist/index.js` with no build step). Rebuild with `npm run build` and
