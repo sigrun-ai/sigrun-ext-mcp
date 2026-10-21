@@ -1,7 +1,7 @@
 /**
  * Shared test harness: opens a REAL pi-durable Harness (registry + faux
  * provider) with the MCP extension installed against a temp config — the
- * same shape as sigrun-ext-approvals' harness tests, no sigrun-core
+ * same shape as the other sigrun extension harnesses, no sigrun-core
  * dependency.
  */
 

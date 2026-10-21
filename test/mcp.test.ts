@@ -2,7 +2,7 @@
  * End-to-end tests (the testable line): an MCP server connects, its tools
  * appear in the harness, and a tool call through the MCP server works
  * end-to-end. Runs a REAL pi-durable Harness (registry + faux provider),
- * mirroring sigrun-ext-approvals' test harness — no sigrun-core dependency.
+ * mirroring the other sigrun extension test harnesses — no sigrun-core dependency.
  *
  * Also covers per-server isolation (a bad server entry quarantines alone),
  * close() lifecycle (children torn down), and the per-request timeout with
