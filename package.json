@@ -1,5 +1,5 @@
 {
-	"name": "sigrun-ext-mcp",
+	"name": "@sigrun/ext-mcp",
 	"version": "0.1.0",
 	"description": "MCP extension for sigrun (pi-durable): registers MCP server tools as <server>/<toolname> tools",
 	"type": "module",
@@ -18,20 +18,26 @@
 		}
 	},
 	"files": [
-		"dist"
+		"dist",
+		"CHANGELOG.md"
 	],
 	"scripts": {
-		"test": "vitest run",
+		"test": "node scripts/check-manifest.mjs --expect-name @sigrun/ext-mcp && vitest run",
 		"typecheck": "tsc --noEmit",
 		"build": "tsc -p tsconfig.build.json",
 		"prepare": "npm run build"
 	},
-	"dependencies": {
-		"@earendil-works/chord": "^1.0.4",
-		"@earendil-works/pi-ai": "^1.0.4",
-		"@earendil-works/pi-durable": "1.2.0"
+	"peerDependencies": {
+		"@earendil-works/chord": "1.3.0",
+		"@earendil-works/pi-ai": "1.3.0",
+		"@earendil-works/pi-durable": "1.3.0",
+		"typebox": "1.3.27"
 	},
 	"devDependencies": {
+		"@earendil-works/chord": "1.3.0",
+		"@earendil-works/pi-ai": "1.3.0",
+		"@earendil-works/pi-durable": "1.3.0",
+		"typebox": "1.3.27",
 		"@types/node": "^26.6.4",
 		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
@@ -45,5 +51,9 @@
 	"bugs": {
 		"url": "https://github.com/sigrun-ai/sigrun-ext-mcp/issues"
 	},
-	"homepage": "https://github.com/sigrun-ai/sigrun-ext-mcp#readme"
+	"homepage": "https://github.com/sigrun-ai/sigrun-ext-mcp#readme",
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	}
 }

@@ -1,4 +1,4 @@
-# sigrun-ext-mcp
+# @sigrun/ext-mcp
 
 Register MCP server tools as pi-durable tools, named `<server>/<tool>`.
 
