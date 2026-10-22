@@ -399,15 +399,18 @@ class SseParser {
 	): void {
 		this.#buffer += chunk;
 		for (;;) {
+			// The SSE spec allows \r\n, \n, or \r line endings; live servers
+			// (e.g. behind certain proxies) emit CRLF, so a plain \n\n split
+			// never finds the event boundary. Normalize the whole buffer's line
+			// endings FIRST, then split events on blank lines.
+			this.#buffer = this.#buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
 			const boundary = this.#buffer.indexOf("\n\n");
 			if (boundary < 0) return;
 			const raw = this.#buffer.slice(0, boundary);
 			this.#buffer = this.#buffer.slice(boundary + 2);
-			// Normalize CRLF to LF first so \r\n\r\n boundaries also split.
-			const event = raw.replaceAll("\r\n", "\n");
 			const dataLines: string[] = [];
 			let eventName = "";
-			for (const line of event.split("\n")) {
+			for (const line of raw.split("\n")) {
 				if (line.startsWith("data:")) {
 					// One leading space after the colon is per-spec optional.
 					const value = line.slice(5);
@@ -542,8 +545,38 @@ class HttpTransport implements Transport {
 				response.body?.cancel().catch(() => {
 					// A cancel failure (already-closed stream) needs no handling.
 				});
-			} else if (contentType.includes("text/event-stream")) {
-				await this.#drainSseBody(response, this.#engine.handleFrame.bind(this.#engine));
+		} else if (contentType.includes("text/event-stream")) {
+				// Streamable SSE: the reply to THIS request arrives as an event
+				// on the response stream — but the stream legitimately STAYS OPEN
+				// after it (the server may push notifications). Read until the
+				// id-matching reply frame lands, then cancel the stream; a
+				// notification POST (no id) has no reply to wait for, so it just
+				// cancels. Reading past the reply would hang on servers that
+				// hold the stream open (e.g. searmcp).
+				//
+				// LEGACY DETECTION (generalized): some legacy servers (crawl4ai's
+				// shape) answer the initial POST itself with 200 + SSE + an
+				// `endpoint` event — no 404/405 ever fires. The endpoint event is
+				// unambiguous (streamable HTTP never sends one), so on the FIRST
+				// request an endpoint event means legacy: adopt this stream as
+				// the server→client channel and re-POST to the message endpoint.
+				if (this.#mode === "streamable" && frame.method === "initialize") {
+					const legacy = await this.#maybeAdoptLegacyFromPost(response);
+					if (legacy) {
+						if (this.#messageUrl === undefined) {
+								throw new Error(
+									`mcp server "${this.#name}" legacy SSE stream announced no endpoint`,
+							);
+						}
+						return this.#post(frame);
+					}
+					// Not legacy: fall through to the reply-wait drain.
+				}
+				const waitForId =
+					typeof frame.id === "number" ? frame.id : undefined;
+				await this.#drainSseBody(response, (parsed) => {
+					this.#engine.handleFrame(parsed);
+				}, waitForId);
 			} else if (frame.id !== undefined && frame.id !== null) {
 				const text = await response.text();
 				if (text !== "") {
@@ -563,21 +596,102 @@ class HttpTransport implements Transport {
 		}
 	}
 
-	/** Read a fetch response whose body is an SSE stream to completion. */
+	/** On the INITIAL POST's SSE response: read events until either the
+	 * id-matching reply arrives (streamable — report not-legacy) or an
+	 * `endpoint` event appears (legacy — adopt the stream as the
+	 * server→client channel, set #messageUrl, report legacy). */
+	async #maybeAdoptLegacyFromPost(response: Response): Promise<boolean> {
+		const parser = new SseParser();
+		const reader = response.body?.getReader();
+		if (reader === undefined) return false;
+		const decoder = new TextDecoder();
+		const self = this;
+		let sawReply = false;
+		const deliver = (parsed: JsonRpcFrame): void => {
+			if (parsed.id !== undefined && parsed.id !== null) sawReply = true;
+			this.#engine.handleFrame(parsed);
+		};
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) return false; // stream ended with no endpoint event
+			let sawEndpoint = false;
+			parser.feed(
+				decoder.decode(value, { stream: true }),
+				deliver,
+				(endpoint) => {
+					sawEndpoint = true;
+					self.#messageUrl = new URL(endpoint, self.#url).toString();
+				},
+			);
+			if (sawEndpoint) {
+				// Adopt this stream as the legacy server→client channel: legacy
+				// mode from here; a background reader keeps feeding frames.
+				this.#mode = "legacy";
+				const controller = new AbortController();
+				this.#getController = controller;
+				const abortOnClose = () => controller.abort();
+				this.#closeHooks.add(abortOnClose);
+				const engine = this.#engine;
+				void (async () => {
+					try {
+						for (;;) {
+							const next = await reader.read();
+							if (next.done) break;
+							parser.feed(
+								decoder.decode(next.value, { stream: true }),
+								(frame2) => engine.handleFrame(frame2),
+							);
+						}
+						engine.handleDeath(
+							new Error(`mcp server "${self.#name}" legacy SSE stream ended`),
+						);
+					} catch (cause) {
+						if (self.#closed) return;
+						engine.handleDeath(
+							cause instanceof Error
+								? cause
+								: new Error(`mcp server "${self.#name}" SSE stream failed`),
+						);
+					}
+				})();
+				return true;
+			}
+			if (sawReply) return false; // a reply already arrived: streamable
+		}
+	}
+
+	/** Read a fetch response whose body is an SSE stream. When `waitForId`
+	 * is set, stop (cancel the stream) once a reply frame with that id has
+	 * been delivered — the streamable transport keeps streams open past the
+	 * reply; without a wait the stream reads to completion. */
 	async #drainSseBody(
 		response: Response,
 		onFrame: (frame: JsonRpcFrame) => void,
+		waitForId?: number,
 	): Promise<void> {
 		const parser = new SseParser();
 		const reader = response.body?.getReader();
 		if (reader === undefined) return;
 		const decoder = new TextDecoder();
+		let seen = false;
+		const deliver = (frame: JsonRpcFrame): void => {
+			onFrame(frame);
+			if (waitForId !== undefined && frame.id === waitForId) {
+				seen = true;
+			}
+		};
 		for (;;) {
 			const { done, value } = await reader.read();
 			if (done) break;
-			parser.feed(decoder.decode(value, { stream: true }), onFrame);
+			parser.feed(decoder.decode(value, { stream: true }), deliver);
+			if (seen) {
+				await reader.cancel().catch(() => {
+					// Already-closed streams cancel noisily; harmless.
+				});
+				return;
+			}
 		}
-		parser.feed(decoder.decode(), onFrame);
+		parser.feed(decoder.decode(), deliver);
 	}
 
 	/** Switch to the legacy transport: open the GET SSE stream and wait for

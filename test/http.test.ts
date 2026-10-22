@@ -338,3 +338,34 @@ test("a hung request rejects at its deadline (timeout semantics survive the tran
 		await close(server);
 	}
 });
+
+test("CRLF-framed SSE replies parse (live servers emit \\r\\n)", async () => {
+	// The SSE spec allows CRLF line endings; a parser that splits events
+	// on plain \n\n never finds the boundary. This stub frames with CRLF.
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+		req.on("end", () => {
+			const frame = JSON.parse(body) as StubFrame;
+			if (frame.method === "notifications/initialized") {
+				res.writeHead(202).end();
+				return;
+			}
+			res.setHeader("content-type", "text/event-stream");
+			res.write(`event: message\r\ndata: ${JSON.stringify(replyFrame(frame))}\r\n\r\n`);
+			res.end();
+		});
+	});
+	const url = await listen(server);
+	try {
+		const client = await connectMcpServer("stub", { url });
+		try {
+			const tools = await client.listTools();
+			expect(tools.map((t) => t.name)).toEqual(["echo", "add"]);
+		} finally {
+			client.close();
+		}
+	} finally {
+		await close(server);
+	}
+});
