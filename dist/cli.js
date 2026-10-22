@@ -17,7 +17,7 @@
  * flow / 5-minute timeout).
  */
 import { createInterface } from "node:readline";
-import { loadMcpConfig, MCP_CONFIG_ENV } from "./config.js";
+import { isStdioServer, loadMcpConfig, MCP_CONFIG_ENV, } from "./config.js";
 import { startOauth } from "./oauth.js";
 import { resolveMcpTokenPath } from "./tokens.js";
 /** The flow timeout (matches startOauth's default; explicit so the user's
@@ -71,7 +71,7 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
         io.stderr.write(`error: no server named "${parsed.server}" in the MCP config\n`);
         return 1;
     }
-    if (server.oauth === undefined) {
+    if (!isStdioServer(server) || server.oauth === undefined) {
         io.stderr.write(`error: server "${parsed.server}" has no oauth block in the MCP config\n`);
         return 1;
     }

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-22
+### Added
+- Remote MCP servers: a `servers` entry may be `{url, headers?, exposure?,
+  toolExposure?, timeout?}` instead of a stdio `{command, args}`. Streamable
+  HTTP is the transport (POST per frame, JSON or SSE reply,
+  `mcp-session-id` captured and echoed); a legacy HTTP+SSE server is adopted
+  automatically — whether it 404/405s the POST or (crawl4ai's shape) answers
+  it with an `endpoint` event — so no supergateway-style adapter is needed.
+- `mcp.json` now resolves from the sigrun config dir
+  (`SIGRUN_CONFIG_DIR/mcp.json`) before the home fallback, matching every
+  other sigrun store.
+
+### Fixed
+- SSE parsing handles CRLF line endings (the spec allows them; live servers
+  emit them).
+- Streamable replies stop at the id-matching frame — servers legitimately
+  hold SSE streams open past the reply.
+
 ## [0.1.0] - 2026-10-13
 ### Added
 - Renamed to `@sigrun/ext-mcp` for the 0.1.0 release (repo stays

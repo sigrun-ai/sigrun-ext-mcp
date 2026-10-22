@@ -152,7 +152,9 @@ test("a stub OAuth flow completes with a pasted URL (the testable line)", async 
 			),
 			env[MCP_CONFIG_ENV]!,
 		);
-		const flow = await startOauth("stub", config.servers.stub.oauth!, {
+		const stubServer = config.servers.stub;
+		if (!("command" in stubServer)) throw new Error("expected stdio server");
+		const flow = await startOauth("stub", stubServer.oauth!, {
 			env,
 			timeoutMs: 10_000,
 		});
@@ -215,7 +217,9 @@ test("the loopback listener also settles the flow (first arrival wins)", async (
 			),
 			env[MCP_CONFIG_ENV]!,
 		);
-		const flow = await startOauth("stub", config.servers.stub.oauth!, {
+		const stubServer = config.servers.stub;
+		if (!("command" in stubServer)) throw new Error("expected stdio server");
+		const flow = await startOauth("stub", stubServer.oauth!, {
 			env,
 			timeoutMs: 10_000,
 		});
@@ -269,6 +273,7 @@ test("a stored token is injected into the child env; absent token is not", async
 			env[MCP_CONFIG_ENV]!,
 		);
 		const server = config.servers.stub;
+		if (!("command" in server)) throw new Error("expected stdio server");
 
 		// No stored token yet: spawn env is just the server's own env.
 		const before = spawnEnvWithToken("stub", server, env);
@@ -314,7 +319,9 @@ test("a pasted URL with an AS error fails the flow fast; junk pastes are ignored
 			),
 			env[MCP_CONFIG_ENV]!,
 		);
-		const flow = await startOauth("stub", config.servers.stub.oauth!, {
+		const stubServer = config.servers.stub;
+		if (!("command" in stubServer)) throw new Error("expected stdio server");
+		const flow = await startOauth("stub", stubServer.oauth!, {
 			env,
 			timeoutMs: 10_000,
 		});
@@ -339,8 +346,10 @@ test("config backward compat: no oauth block → part-1 shape unchanged", () => 
 		}),
 		"/x/mcp.json",
 	);
-	expect(config.servers.plain.oauth).toBeUndefined();
-	expect(config.servers.plain).toEqual({ command: "node", args: ["s.mjs"] });
+	const plain = config.servers.plain;
+	if (!("command" in plain)) throw new Error("expected stdio plain");
+	expect(plain.oauth).toBeUndefined();
+	expect(plain).toEqual({ command: "node", args: ["s.mjs"] });
 
 	// A malformed oauth block fails loudly (fail-loud config store).
 	expect(() =>

@@ -17,7 +17,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 /** How one tool's registration reaches callers (pi-durable 1.2.0):
  * `codemode` → `callers: ["tools"]` (scripts only, never model-offered),
@@ -105,14 +105,8 @@ export function serverEnabled(server: McpServerConfig): boolean {
 	return server.enabled !== false && server.disabled !== true;
 }
 
-/** One configured MCP server (stdio transport). */
-export interface McpServerConfig {
-	/** The executable to spawn. */
-	readonly command: string;
-	/** Arguments to the executable. */
-	readonly args: readonly string[];
-	/** Extra environment variables for the child process. */
-	readonly env?: Readonly<Record<string, string>>;
+/** Fields every server variant carries regardless of transport. */
+interface McpServerCommon {
 	/** Skip this server entirely (default false). */
 	readonly disabled?: boolean;
 	/** Skip this server entirely (default true; contradicts `disabled`). */
@@ -124,9 +118,38 @@ export interface McpServerConfig {
 	readonly toolExposure?: Readonly<Record<string, McpExposure>>;
 	/** Per-request wire timeout in seconds (default 60). */
 	readonly timeout?: number;
+}
+
+/** One configured MCP server (stdio transport). */
+export interface McpStdioServerConfig extends McpServerCommon {
+	/** The executable to spawn. */
+	readonly command: string;
+	/** Arguments to the executable. */
+	readonly args: readonly string[];
+	/** Extra environment variables for the child process. */
+	readonly env?: Readonly<Record<string, string>>;
 	/** OAuth (T3c): when present, `sigrun-ext-mcp oauth <name>` can mint a
 	 * token and spawn injects it as `MCP_ACCESS_TOKEN` (see tokens.ts). */
 	readonly oauth?: McpOAuthConfig;
+}
+
+/** One configured MCP server (remote transport: streamable HTTP, with a
+ * legacy-SSE fallback negotiated on first contact). */
+export interface McpUrlServerConfig extends McpServerCommon {
+	/** The server endpoint (http/https). */
+	readonly url: string;
+	/** Extra request headers (auth etc.), sent on every request. */
+	readonly headers?: Readonly<Record<string, string>>;
+}
+
+/** One configured MCP server: stdio OR remote. */
+export type McpServerConfig = McpStdioServerConfig | McpUrlServerConfig;
+
+/** Narrow to the stdio variant (the spawn path). */
+export function isStdioServer(
+	server: McpServerConfig,
+): server is McpStdioServerConfig {
+	return "command" in server;
 }
 
 /** OAuth block for one server: how to run the authorization-code flow. */
@@ -151,7 +174,13 @@ export interface McpConfig {
 /** The env override the config store reads. */
 export const MCP_CONFIG_ENV = "SIGRUN_MCP_CONFIG";
 
-/** Resolve the config path without reading it (for diagnostics). */
+/** Resolve the config path without reading it (for diagnostics).
+ *
+ * Resolution order: the `SIGRUN_MCP_CONFIG` override → the sigrun config
+ * dir (`SIGRUN_CONFIG_DIR`, the SAME root every sigrun store resolves
+ * through — a deployment setting one sets them all) → `~/.config/sigrun`
+ * (the pre-deployment fallback, kept so a bare user install keeps
+ * working). */
 export function resolveMcpConfigPath(
 	env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -159,6 +188,10 @@ export function resolveMcpConfigPath(
 	if (override !== undefined && override !== "") {
 		// A relative override resolves against cwd, like sigrun's other paths.
 		return isAbsolute(override) ? override : resolve(override);
+	}
+	const configDir = env.SIGRUN_CONFIG_DIR;
+	if (configDir !== undefined && configDir !== "") {
+		return join(configDir, "mcp.json");
 	}
 	return resolve(homedir(), ".config", "sigrun", "mcp.json");
 }
@@ -196,9 +229,39 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 		if (!isRecord(entry)) {
 			throw new Error(
 				`mcp config ${source}: server "${name}" must be an object`,
+		);
+		}
+		// Transport dispatch: a server is EITHER a stdio child or a remote
+		// endpoint. Both arms share the optional fields below; each arm then
+		// validates its own required fields.
+		const hasCommand = entry.command !== undefined || entry.args !== undefined;
+		const hasUrl = entry.url !== undefined;
+		if (hasCommand && hasUrl) {
+			throw new Error(
+				`mcp config ${source}: server "${name}" cannot carry both "command" (stdio) and "url" (remote) — pick one transport`,
 			);
 		}
-		if (
+		if (!hasCommand && !hasUrl) {
+			throw new Error(
+				`mcp config ${source}: server "${name}" needs either "command"+"args" (stdio) or "url" (remote)`,
+			);
+		}
+		if (hasUrl) {
+			if (typeof entry.url !== "string" || !/^https?:\/\//.test(entry.url)) {
+				throw new Error(
+					`mcp config ${source}: server "${name}" url must be an http(s) URL`,
+				);
+			}
+			if (
+				entry.headers !== undefined &&
+				(!isRecord(entry.headers) ||
+					Object.values(entry.headers).some((v) => typeof v !== "string"))
+			) {
+				throw new Error(
+					`mcp config ${source}: server "${name}" headers must map strings to strings`,
+				);
+			}
+		} else if (
 			typeof entry.command !== "string" ||
 			!Array.isArray(entry.args) ||
 			entry.args.some((arg) => typeof arg !== "string")
@@ -272,19 +335,33 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 			entry.oauth === undefined
 				? undefined
 				: parseOauthEntry(entry.oauth, source, name);
-		servers[name] = {
-			command: entry.command,
-			args: entry.args,
-			...(entry.env === undefined
-				? {}
-				: { env: entry.env as Record<string, string> }),
-			...(entry.disabled === undefined ? {} : { disabled: entry.disabled }),
-			...(entry.enabled === undefined ? {} : { enabled: entry.enabled }),
-			...(exposure === undefined ? {} : { exposure }),
-			...(toolExposure === undefined ? {} : { toolExposure }),
-			...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
-			...(oauth === undefined ? {} : { oauth }),
-		};
+		// The common optionals first, then the transport arm's own fields —
+		// the union stays discriminable by "command" vs "url" presence.
+		servers[name] = hasUrl
+			? {
+					url: entry.url as string,
+					...(entry.headers === undefined
+						? {}
+						: { headers: entry.headers as Record<string, string> }),
+					...(entry.disabled === undefined ? {} : { disabled: entry.disabled }),
+					...(entry.enabled === undefined ? {} : { enabled: entry.enabled }),
+					...(exposure === undefined ? {} : { exposure }),
+					...(toolExposure === undefined ? {} : { toolExposure }),
+					...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
+				}
+			: {
+					command: entry.command as string,
+					args: entry.args as readonly string[],
+					...(entry.env === undefined
+						? {}
+						: { env: entry.env as Record<string, string> }),
+					...(entry.disabled === undefined ? {} : { disabled: entry.disabled }),
+					...(entry.enabled === undefined ? {} : { enabled: entry.enabled }),
+					...(exposure === undefined ? {} : { exposure }),
+					...(toolExposure === undefined ? {} : { toolExposure }),
+					...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
+					...(oauth === undefined ? {} : { oauth }),
+				};
 	}
 	return { servers };
 }

@@ -27,7 +27,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, } from "@earendil-works/pi-durable";
 import { connectMcpServer } from "./client.js";
-import { loadMcpConfig, resolveToolExposure, serverEnabled, } from "./config.js";
+import { isStdioServer, loadMcpConfig, resolveToolExposure, serverEnabled, } from "./config.js";
 import { MCP_SERVERS_SECTION_KEY, partitionForSection, renderMcpServersSection, } from "./section.js";
 /** The extension's pi-durable registry name. */
 export const MCP_EXTENSION_NAME = "sigrun.mcp";
@@ -132,9 +132,12 @@ export function createMcpExtension() {
                     tools.push(mcpTool(name, tool, client, exposure, server.timeout));
                 }
                 if (mix.count > 0 && (mix.codemode || mix.deferred)) {
+                    const origin = isStdioServer(server)
+                        ? `${server.command} ${server.args.join(" ")}`.trim()
+                        : server.url;
                     serverExposures.set(name, {
                         ...mix,
-                        description: `${mix.count} tool${mix.count === 1 ? "" : "s"} from ${server.command} ${server.args.join(" ")}`.trim(),
+                        description: `${mix.count} tool${mix.count === 1 ? "" : "s"} from ${origin}`.trim(),
                     });
                 }
             }

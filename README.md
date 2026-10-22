@@ -2,8 +2,10 @@
 
 Register MCP server tools as pi-durable tools, named `<server>/<tool>`.
 
-Config: `~/.config/sigrun/mcp.json` (or the `SIGRUN_MCP_CONFIG` env override
-pointing at any path). Each entry under `"servers"` names a stdio MCP server:
+Config: the sigrun config dir's `mcp.json` (`SIGRUN_CONFIG_DIR/mcp.json`; a
+bare user install falls back to `~/.config/sigrun/mcp.json`; the
+`SIGRUN_MCP_CONFIG` env override points at any path). Each entry under
+`"servers"` names an MCP server — stdio or remote:
 
 ```json
 {
@@ -13,6 +15,11 @@ pointing at any path). Each entry under `"servers"` names a stdio MCP server:
 			"args": ["-y", "@modelcontextprotocol/server-github"],
 			"exposure": "codemode",
 			"timeout": 120
+		},
+		"search": {
+			"url": "https://mcp.example.test/mcp",
+			"headers": { "Authorization": "Bearer <token>" },
+			"exposure": "direct"
 		}
 	}
 }
@@ -20,8 +27,14 @@ pointing at any path). Each entry under `"servers"` names a stdio MCP server:
 
 ## Server fields
 
-- `command`, `args` (required) — how to spawn the server.
-- `env` — extra environment variables for the child process.
+- `command`, `args` (stdio) — how to spawn the server.
+- `url` (remote) — the server endpoint (http/https). Streamable HTTP is the
+  transport; a legacy HTTP+SSE server (2024-11-05 shape — GET stream +
+  `endpoint` event + message POSTs) is adopted automatically, so no adapter
+  process is needed.
+- `headers` (remote) — extra request headers (auth etc.), sent on every
+  request.
+- `env` (stdio) — extra environment variables for the child process.
 - `enabled` (default `true`) / `disabled` — skip the server entirely. Set one,
   never both: a server that is simultaneously on and off is a config error and
   fails loudly.
@@ -33,8 +46,9 @@ pointing at any path). Each entry under `"servers"` names a stdio MCP server:
 - `toolExposure` — per-tool overrides of `exposure`: an object mapping tool
   names (exact) or `*`-globs (e.g. `"get-*"`) to exposure words. An exact name
   always wins; among matching patterns the FIRST one in config order wins.
-- `oauth` — the authorization-code (PKCE) flow block; see `sigrun-ext-mcp oauth
-  <server>` (the CLI mints and stores a token; the spawn injects it).
+- `oauth` (stdio) — the authorization-code (PKCE) flow block; see
+  `sigrun-ext-mcp oauth <server>` (the CLI mints and stores a token; the spawn
+  injects it).
 
 ## Exposure: how tools reach callers
 
