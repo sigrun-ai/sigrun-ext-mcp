@@ -12,3 +12,5 @@ coverage/
 .env
 .vcc/
 *.pem
+.npmrc
+pi-warden.md
