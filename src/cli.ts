@@ -18,7 +18,12 @@
  */
 
 import { createInterface } from "node:readline";
-import { loadMcpConfig, MCP_CONFIG_ENV, type McpConfig } from "./config.js";
+import {
+	isStdioServer,
+	loadMcpConfig,
+	MCP_CONFIG_ENV,
+	type McpConfig,
+} from "./config.js";
 import { startOauth } from "./oauth.js";
 import { resolveMcpTokenPath } from "./tokens.js";
 
@@ -93,7 +98,7 @@ export async function runCli(
 		);
 		return 1;
 	}
-	if (server.oauth === undefined) {
+	if (!isStdioServer(server) || server.oauth === undefined) {
 		io.stderr.write(
 			`error: server "${parsed.server}" has no oauth block in the MCP config\n`,
 		);

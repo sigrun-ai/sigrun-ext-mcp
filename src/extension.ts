@@ -35,6 +35,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { connectMcpServer, type McpClient } from "./client.js";
 import {
+	isStdioServer,
 	loadMcpConfig,
 	resolveToolExposure,
 	serverEnabled,
@@ -197,12 +198,15 @@ export function createMcpExtension(): McpWiring {
 						);
 					}
 					if (mix.count > 0 && (mix.codemode || mix.deferred)) {
-						serverExposures.set(name, {
-							...mix,
-							description: `${mix.count} tool${
-								mix.count === 1 ? "" : "s"
-							} from ${server.command} ${server.args.join(" ")}`.trim(),
-						});
+				const origin = isStdioServer(server)
+					? `${server.command} ${server.args.join(" ")}`.trim()
+					: server.url;
+				serverExposures.set(name, {
+						...mix,
+						description: `${mix.count} tool${
+							mix.count === 1 ? "" : "s"
+						} from ${origin}`.trim(),
+					});
 					}
 				} catch (cause) {
 					clients.delete(name);

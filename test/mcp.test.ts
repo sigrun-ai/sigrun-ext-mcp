@@ -138,10 +138,11 @@ test("a tools/call round-trip through the raw client resolves the result", async
 		);
 	} finally {
 		client.close();
+		// An intentional close is a shutdown, not a failure: every later
+		// call rejects with the close error, never a protocol error.
+		await expect(client.listTools()).rejects.toThrow(/closed/);
+		client.close(); // idempotent
 	}
-	// close() tears the child down cleanly: exited() resolves with no error
-	// (an intentional close is a shutdown, not a failure).
-	expect(await client.exited()).toBeUndefined();
 });
 
 test("malformed config throws a clear error from the factory (quarantine semantics)", async () => {
