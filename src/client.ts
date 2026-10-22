@@ -532,9 +532,17 @@ class HttpTransport implements Transport {
 			}
 			// A notification needs no body processing; a request's reply may
 			// be here (streamable) or on the GET stream (legacy — where the
-			// body is typically empty 202).
+			// body is typically empty 202). 202/204 carry no reply body per
+			// spec — and a legacy server may 202 WITHOUT ever ending the
+			// response stream, so awaiting the body would hang: treat them as
+			// accepted-and-done (the reply, if any, rides the GET stream).
 			const contentType = response.headers.get("content-type") ?? "";
-			if (contentType.includes("text/event-stream")) {
+			if (response.status === 202 || response.status === 204) {
+				// Nothing to read; cancel any body the server left open.
+				response.body?.cancel().catch(() => {
+					// A cancel failure (already-closed stream) needs no handling.
+				});
+			} else if (contentType.includes("text/event-stream")) {
 				await this.#drainSseBody(response, this.#engine.handleFrame.bind(this.#engine));
 			} else if (frame.id !== undefined && frame.id !== null) {
 				const text = await response.text();

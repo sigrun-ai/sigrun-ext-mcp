@@ -16,7 +16,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 /** Config-level exposure words: the four real ones plus pi's `codemode-deferred`
  * alias (normalized to "codemode" at parse time — pi compat). */
 const EXPOSURE_WORDS = [
@@ -85,14 +85,28 @@ export function resolveToolExposure(server, toolName) {
 export function serverEnabled(server) {
     return server.enabled !== false && server.disabled !== true;
 }
+/** Narrow to the stdio variant (the spawn path). */
+export function isStdioServer(server) {
+    return "command" in server;
+}
 /** The env override the config store reads. */
 export const MCP_CONFIG_ENV = "SIGRUN_MCP_CONFIG";
-/** Resolve the config path without reading it (for diagnostics). */
+/** Resolve the config path without reading it (for diagnostics).
+ *
+ * Resolution order: the `SIGRUN_MCP_CONFIG` override → the sigrun config
+ * dir (`SIGRUN_CONFIG_DIR`, the SAME root every sigrun store resolves
+ * through — a deployment setting one sets them all) → `~/.config/sigrun`
+ * (the pre-deployment fallback, kept so a bare user install keeps
+ * working). */
 export function resolveMcpConfigPath(env = process.env) {
     const override = env[MCP_CONFIG_ENV];
     if (override !== undefined && override !== "") {
         // A relative override resolves against cwd, like sigrun's other paths.
         return isAbsolute(override) ? override : resolve(override);
+    }
+    const configDir = env.SIGRUN_CONFIG_DIR;
+    if (configDir !== undefined && configDir !== "") {
+        return join(configDir, "mcp.json");
     }
     return resolve(homedir(), ".config", "sigrun", "mcp.json");
 }
@@ -123,7 +137,28 @@ export function parseMcpConfig(text, source) {
         if (!isRecord(entry)) {
             throw new Error(`mcp config ${source}: server "${name}" must be an object`);
         }
-        if (typeof entry.command !== "string" ||
+        // Transport dispatch: a server is EITHER a stdio child or a remote
+        // endpoint. Both arms share the optional fields below; each arm then
+        // validates its own required fields.
+        const hasCommand = entry.command !== undefined || entry.args !== undefined;
+        const hasUrl = entry.url !== undefined;
+        if (hasCommand && hasUrl) {
+            throw new Error(`mcp config ${source}: server "${name}" cannot carry both "command" (stdio) and "url" (remote) — pick one transport`);
+        }
+        if (!hasCommand && !hasUrl) {
+            throw new Error(`mcp config ${source}: server "${name}" needs either "command"+"args" (stdio) or "url" (remote)`);
+        }
+        if (hasUrl) {
+            if (typeof entry.url !== "string" || !/^https?:\/\//.test(entry.url)) {
+                throw new Error(`mcp config ${source}: server "${name}" url must be an http(s) URL`);
+            }
+            if (entry.headers !== undefined &&
+                (!isRecord(entry.headers) ||
+                    Object.values(entry.headers).some((v) => typeof v !== "string"))) {
+                throw new Error(`mcp config ${source}: server "${name}" headers must map strings to strings`);
+            }
+        }
+        else if (typeof entry.command !== "string" ||
             !Array.isArray(entry.args) ||
             entry.args.some((arg) => typeof arg !== "string")) {
             throw new Error(`mcp config ${source}: server "${name}" needs a string "command" and a string[] "args"`);
@@ -169,19 +204,33 @@ export function parseMcpConfig(text, source) {
         const oauth = entry.oauth === undefined
             ? undefined
             : parseOauthEntry(entry.oauth, source, name);
-        servers[name] = {
-            command: entry.command,
-            args: entry.args,
-            ...(entry.env === undefined
-                ? {}
-                : { env: entry.env }),
-            ...(entry.disabled === undefined ? {} : { disabled: entry.disabled }),
-            ...(entry.enabled === undefined ? {} : { enabled: entry.enabled }),
-            ...(exposure === undefined ? {} : { exposure }),
-            ...(toolExposure === undefined ? {} : { toolExposure }),
-            ...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
-            ...(oauth === undefined ? {} : { oauth }),
-        };
+        // The common optionals first, then the transport arm's own fields —
+        // the union stays discriminable by "command" vs "url" presence.
+        servers[name] = hasUrl
+            ? {
+                url: entry.url,
+                ...(entry.headers === undefined
+                    ? {}
+                    : { headers: entry.headers }),
+                ...(entry.disabled === undefined ? {} : { disabled: entry.disabled }),
+                ...(entry.enabled === undefined ? {} : { enabled: entry.enabled }),
+                ...(exposure === undefined ? {} : { exposure }),
+                ...(toolExposure === undefined ? {} : { toolExposure }),
+                ...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
+            }
+            : {
+                command: entry.command,
+                args: entry.args,
+                ...(entry.env === undefined
+                    ? {}
+                    : { env: entry.env }),
+                ...(entry.disabled === undefined ? {} : { disabled: entry.disabled }),
+                ...(entry.enabled === undefined ? {} : { enabled: entry.enabled }),
+                ...(exposure === undefined ? {} : { exposure }),
+                ...(toolExposure === undefined ? {} : { toolExposure }),
+                ...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
+                ...(oauth === undefined ? {} : { oauth }),
+            };
     }
     return { servers };
 }

@@ -34,14 +34,8 @@ export declare function resolveToolExposure(server: McpServerConfig, toolName: s
  * `disabled: true` both skip it (parse-time validation rejects
  * contradictions, so either false simply means off). */
 export declare function serverEnabled(server: McpServerConfig): boolean;
-/** One configured MCP server (stdio transport). */
-export interface McpServerConfig {
-    /** The executable to spawn. */
-    readonly command: string;
-    /** Arguments to the executable. */
-    readonly args: readonly string[];
-    /** Extra environment variables for the child process. */
-    readonly env?: Readonly<Record<string, string>>;
+/** Fields every server variant carries regardless of transport. */
+interface McpServerCommon {
     /** Skip this server entirely (default false). */
     readonly disabled?: boolean;
     /** Skip this server entirely (default true; contradicts `disabled`). */
@@ -53,10 +47,31 @@ export interface McpServerConfig {
     readonly toolExposure?: Readonly<Record<string, McpExposure>>;
     /** Per-request wire timeout in seconds (default 60). */
     readonly timeout?: number;
+}
+/** One configured MCP server (stdio transport). */
+export interface McpStdioServerConfig extends McpServerCommon {
+    /** The executable to spawn. */
+    readonly command: string;
+    /** Arguments to the executable. */
+    readonly args: readonly string[];
+    /** Extra environment variables for the child process. */
+    readonly env?: Readonly<Record<string, string>>;
     /** OAuth (T3c): when present, `sigrun-ext-mcp oauth <name>` can mint a
      * token and spawn injects it as `MCP_ACCESS_TOKEN` (see tokens.ts). */
     readonly oauth?: McpOAuthConfig;
 }
+/** One configured MCP server (remote transport: streamable HTTP, with a
+ * legacy-SSE fallback negotiated on first contact). */
+export interface McpUrlServerConfig extends McpServerCommon {
+    /** The server endpoint (http/https). */
+    readonly url: string;
+    /** Extra request headers (auth etc.), sent on every request. */
+    readonly headers?: Readonly<Record<string, string>>;
+}
+/** One configured MCP server: stdio OR remote. */
+export type McpServerConfig = McpStdioServerConfig | McpUrlServerConfig;
+/** Narrow to the stdio variant (the spawn path). */
+export declare function isStdioServer(server: McpServerConfig): server is McpStdioServerConfig;
 /** OAuth block for one server: how to run the authorization-code flow. */
 export interface McpOAuthConfig {
     /** The AS's authorize endpoint (GET; the user opens this in a browser). */
@@ -76,7 +91,13 @@ export interface McpConfig {
 }
 /** The env override the config store reads. */
 export declare const MCP_CONFIG_ENV = "SIGRUN_MCP_CONFIG";
-/** Resolve the config path without reading it (for diagnostics). */
+/** Resolve the config path without reading it (for diagnostics).
+ *
+ * Resolution order: the `SIGRUN_MCP_CONFIG` override → the sigrun config
+ * dir (`SIGRUN_CONFIG_DIR`, the SAME root every sigrun store resolves
+ * through — a deployment setting one sets them all) → `~/.config/sigrun`
+ * (the pre-deployment fallback, kept so a bare user install keeps
+ * working). */
 export declare function resolveMcpConfigPath(env?: NodeJS.ProcessEnv): string;
 /**
  * Parse and validate an `mcp.json` body. Throws a clear error naming the
@@ -89,3 +110,4 @@ export declare function parseMcpConfig(text: string, source: string): McpConfig;
  * nothing); an existing-but-malformed file throws.
  */
 export declare function loadMcpConfig(env?: NodeJS.ProcessEnv): McpConfig;
+export {};
