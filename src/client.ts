@@ -28,7 +28,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { Readable, Writable } from "node:stream";
-import { spawnEnvWithToken } from "./tokens.js";
+import { serverSpawnEnv } from "./spawn-env.js";
 import { DEFAULT_TIMEOUT_SECONDS, type McpUrlServerConfig } from "./config.js";
 import type {
 	McpServerConfig,
@@ -819,9 +819,9 @@ export async function connectMcpServer(
 		const transport = new HttpTransport(name, config);
 		engine = transport.engine;
 	} else {
-		// Token injection (ruling 3): a server with an oauth block AND a stored
-		// token gets it as MCP_ACCESS_TOKEN, merged over the server's own env.
-		const env = { ...process.env, ...spawnEnvWithToken(name, config) };
+		// Never sigrun's own environment: an allowlist, the server's config
+		// env, then its stored token as MCP_ACCESS_TOKEN (ruling 3).
+		const env = serverSpawnEnv(name, config);
 		const transport = new StdioTransport(name, config.command, config.args, env);
 		engine = transport.engine;
 	}

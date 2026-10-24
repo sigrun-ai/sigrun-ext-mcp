@@ -10,6 +10,10 @@
  *     (two number arguments)
  *   - `tools/call` → `echo` returns the greeting text; `add` returns the sum
  *     (as JSON text); unknown tools → a JSON-RPC error
+ *   - with `STUB_ENV_TOOL=1` in its environment, a third tool `getenv`
+ *     returns the named variable's value ("" when unset): the spawn-env
+ *     tests read the server's real environment through it, and the opt-in
+ *     keeps every other test's two-tool list exact
  */
 
 import { createInterface } from "node:readline";
@@ -36,6 +40,17 @@ const TOOLS = [
 		},
 	},
 ];
+if (process.env.STUB_ENV_TOOL === "1") {
+	TOOLS.push({
+		name: "getenv",
+		description: "Return one environment variable of this server.",
+		inputSchema: {
+			type: "object",
+			properties: { name: { type: "string" } },
+			required: ["name"],
+		},
+	});
+}
 
 const lines = createInterface({ input: process.stdin });
 lines.on("line", (line) => {
@@ -77,6 +92,14 @@ lines.on("line", (line) => {
 				id,
 				result: {
 					content: [{ type: "text", text: `hello, ${String(args.name)}` }],
+				},
+			});
+		} else if (name === "getenv" && process.env.STUB_ENV_TOOL === "1") {
+			write({
+				jsonrpc: "2.0",
+				id,
+				result: {
+					content: [{ type: "text", text: process.env[String(args.name)] ?? "" }],
 				},
 			});
 		} else if (name === "add") {

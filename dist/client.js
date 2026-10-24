@@ -26,7 +26,7 @@
  * transport (per-server isolation: the next request gets a fresh chance).
  */
 import { spawn } from "node:child_process";
-import { spawnEnvWithToken } from "./tokens.js";
+import { serverSpawnEnv } from "./spawn-env.js";
 import { DEFAULT_TIMEOUT_SECONDS } from "./config.js";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 function isRecord(value) {
@@ -666,9 +666,9 @@ export async function connectMcpServer(name, config) {
         engine = transport.engine;
     }
     else {
-        // Token injection (ruling 3): a server with an oauth block AND a stored
-        // token gets it as MCP_ACCESS_TOKEN, merged over the server's own env.
-        const env = { ...process.env, ...spawnEnvWithToken(name, config) };
+        // Never sigrun's own environment: an allowlist, the server's config
+        // env, then its stored token as MCP_ACCESS_TOKEN (ruling 3).
+        const env = serverSpawnEnv(name, config);
         const transport = new StdioTransport(name, config.command, config.args, env);
         engine = transport.engine;
     }

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Security
+- Stdio servers no longer inherit sigrun's environment. They are spawned
+  with an allowlist (`PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_*`, `TZ`,
+  `TERM`, `USER`, `LOGNAME`, `SHELL`, `NPM_CONFIG_CACHE`,
+  `SSH_AUTH_SOCK`) plus their configured `env` and stored token.
+  Previously every server could read `SIGRUN_API_TOKEN`,
+  `SIGRUN_PROXY_SECRET` and provider keys. A server that relied on an
+  inherited variable must now list it in its `env`.
 
 ## [0.2.0] - 2026-10-22
 ### Added
