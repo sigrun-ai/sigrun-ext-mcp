@@ -16,7 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Per-user tool publication is declared even with an empty or shared-only
   catalog, so lifecycle activation and prompt rendering no longer fail when
-  there are no personal catalog servers.
+  there are no personal catalog servers. Because the declaration is
+  unconditional, core's boot sweep now writes `sigrun.mcp@<owner>` into every
+  owned conversation's selection on the first boot after upgrading, even with
+  no `mcp.json` or `userServers: "none"`. That is a one-time durable write:
+  the name resolves to nothing while no tools are published, so nothing
+  changes for the conversation, and later boots report zero.
 - Catalog enablement now mounts through `surfaces.settings` and uses core's
   actual flat settings shape: each toggle and changed key is the bare server
   name. Shared-authority help is punctuated and guarded against missing
