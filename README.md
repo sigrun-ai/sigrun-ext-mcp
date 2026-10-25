@@ -63,9 +63,21 @@ bare user install falls back to `~/.config/sigrun/mcp.json`; the
 - `toolExposure` — per-tool overrides of `exposure`: an object mapping tool
   names (exact) or `*`-globs (e.g. `"get-*"`) to exposure words. An exact name
   always wins; among matching patterns the FIRST one in config order wins.
-- `oauth` (stdio) — the authorization-code (PKCE) flow block; see
-  `sigrun-ext-mcp oauth <server>` (the CLI mints and stores a token; the spawn
-  injects it).
+- `oauth` (stdio) — the authorization-code (PKCE) flow block. Shared servers
+  use `sigrun-ext-mcp oauth <server>` and the file token store. Per-user
+  servers use `POST /v1/ext/sigrun-mcp/oauth/<server>/start`, then
+  `POST /v1/ext/sigrun-mcp/oauth/<server>/complete` with
+  `{ "redirectedUrl": "<full redirected URL>" }`; the CLI refuses these
+  servers so their credentials cannot enter the shared store.
+
+Per-user PKCE state stays in memory for ten minutes and is scoped to the
+authenticated user and server. Completion stores only the raw access token in
+that user's `token:<server>` secret. It then retires and reconnects that
+user's catalog connection. Core owns the process lifecycle: releasing the last
+handle arms idle-stop, so a still-live child keeps its original environment
+until that timer fires or it crashes; the extension cannot force a relaunch
+through the host contract. An already idle-stopped server launches fresh on
+the next activation and reads the new token immediately.
 
 `userServers` is the separate admin policy for user-supplied servers:
 `"none"` (default), `"remote"`, or `"all"`. It is distinct from the admin

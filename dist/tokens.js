@@ -95,6 +95,10 @@ export function storeMcpToken(name, token, env = process.env) {
     saveMcpTokens(store, env);
     return store;
 }
+/** Store the exact credential shape read by per-user service launches. */
+export async function storeUserMcpToken(host, user, server, accessToken) {
+    await host.stores.user(user).secrets.set(`token:${server}`, accessToken);
+}
 /**
  * The env var a stored token is injected as (ruling 3): stdio MCP servers
  * take credentials through env, not HTTP headers. A server with both an

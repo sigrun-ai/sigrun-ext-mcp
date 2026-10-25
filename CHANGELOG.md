@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   harness-only boots cannot hang while preparing a request.
 
 ### Added
+- Per-user OAuth start/complete extension routes with ten-minute in-memory
+  PKCE state scoped by user and server. Completion stores the raw access
+  token in the caller's scoped secrets; the CLI refuses per-user servers.
+- Token storage retires and reconnects the caller's catalog connection.
+  Core owns the process lifecycle: a still-live child retains its original
+  environment until idle-stop or exit because the host contract cannot force
+  a relaunch.
 - MCP catalog entries default to per-user credentials, with lazy per-user
   stdio services, scoped token injection, remote connections, and tools
   published only for their owner. Opt-in availability and per-user settings

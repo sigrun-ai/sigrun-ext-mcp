@@ -7,7 +7,15 @@ import { connectMcpServer, type McpClient } from "./client.js";
 import {
 	loadMcpConfig,
 	serverEnabled,
+	type McpOAuthConfig,
+	type McpStdioServerConfig,
 } from "./config.js";
+import {
+	createUserOauthFlows,
+	exchangeCode,
+	extractCode,
+} from "./oauth.js";
+import { storeUserMcpToken } from "./tokens.js";
 import {
 	MCP_SERVERS_SECTION_KEY,
 	partitionForSection,
@@ -40,9 +48,20 @@ const SessionOwnerDoc = defineDoc<{ owner?: string }>({
 	initial: () => ({}),
 });
 
+export interface ExtensionRouteContribution {
+	readonly method: "POST";
+	readonly path: string;
+	readonly auth: "user";
+	handler(
+		request: Request,
+		ctx: { readonly principal?: { readonly user?: string }; readonly host: SigrunHost },
+	): Promise<Response>;
+}
+
 export interface McpWiring {
 	readonly extension: Extension;
 	readonly perUserTools: boolean;
+	readonly routes: readonly ExtensionRouteContribution[];
 	readonly userServices: readonly UserService[];
 	readonly surfaces: { readonly settings: readonly CatalogSettingsSection[] };
 	conversationCreated(event: OwnerEvent): Promise<void>;
@@ -101,6 +120,7 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 		([, server]) => server.credentials === "shared" && serverEnabled(server),
 	);
 	const catalog = createUserCatalog(host, config.servers);
+	const oauthFlows = createUserOauthFlows();
 	let closed = false;
 
 	const pending: Promise<void>[] = [];
@@ -148,6 +168,108 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 		if (event.owner !== undefined) await catalog.activate(event.owner);
 	};
 
+	const errorResponse = (status: number, error: string): Response =>
+		Response.json({ error }, { status });
+	const serverFromRequest = (request: Request): string | undefined => {
+		const match = new URL(request.url).pathname.match(
+			/\/v1\/ext\/sigrun-mcp\/oauth\/([^/]+)\/(?:start|complete)$/,
+		);
+		if (match === null) return undefined;
+		try {
+			return decodeURIComponent(match[1]);
+		} catch {
+			return undefined;
+		}
+	};
+	const oauthServer = (name: string | undefined):
+		| (McpStdioServerConfig & { readonly oauth: McpOAuthConfig })
+		| undefined => {
+		if (name === undefined) return undefined;
+		const server = config.servers[name];
+		if (
+			server === undefined ||
+			server.credentials === "shared" ||
+			!serverEnabled(server) ||
+			!("oauth" in server) ||
+			server.oauth === undefined
+		) return undefined;
+		return { ...server, oauth: server.oauth };
+	};
+	const userFrom = (ctx: { readonly principal?: { readonly user?: string } }) =>
+		ctx.principal?.user;
+
+	const routes: readonly ExtensionRouteContribution[] = [
+		{
+			method: "POST",
+			path: "oauth/:server/start",
+			auth: "user",
+			handler: async (request, ctx) => {
+				const user = userFrom(ctx);
+				if (user === undefined) return errorResponse(400, "no_pending_flow");
+				const name = serverFromRequest(request);
+				const server = oauthServer(name);
+				if (name === undefined || server === undefined) {
+					return errorResponse(404, "unknown_server");
+				}
+				// No listener: the browser is redirected back to the complete
+				// endpoint, whose URL the user can paste from the address bar.
+				const redirectUri = new URL(
+					`/v1/ext/sigrun-mcp/oauth/${encodeURIComponent(name)}/complete`,
+					request.url,
+				).toString();
+				const url = oauthFlows.start(user, name, server.oauth, redirectUri);
+				return Response.json({ url });
+			},
+		},
+		{
+			method: "POST",
+			path: "oauth/:server/complete",
+			auth: "user",
+			handler: async (request, ctx) => {
+				const user = userFrom(ctx);
+				if (user === undefined) return errorResponse(400, "no_pending_flow");
+				const name = serverFromRequest(request);
+				const server = oauthServer(name);
+				if (name === undefined || server === undefined) {
+					return errorResponse(404, "unknown_server");
+				}
+				let redirectedUrl: string;
+				try {
+					const body: unknown = await request.json();
+					if (
+						typeof body !== "object" || body === null || Array.isArray(body) ||
+						!("redirectedUrl" in body) ||
+						typeof body.redirectedUrl !== "string" || body.redirectedUrl === ""
+					) throw new Error("invalid body");
+					redirectedUrl = body.redirectedUrl;
+				} catch {
+					return errorResponse(400, "invalid_body");
+				}
+				const flow = oauthFlows.take(user, name);
+				if (flow === undefined) return errorResponse(400, "no_pending_flow");
+				let code: string;
+				try {
+					const extracted = extractCode(redirectedUrl);
+					if (!("code" in extracted)) throw new Error("authorization failed");
+					code = extracted.code;
+				} catch {
+					oauthFlows.release(user, name, flow);
+					return errorResponse(400, "invalid_redirect");
+				}
+				let token: Awaited<ReturnType<typeof exchangeCode>>;
+				try {
+					token = await exchangeCode(server.oauth, code, flow.redirectUri, flow.verifier);
+				} catch {
+					return errorResponse(502, "exchange_failed");
+				}
+				await storeUserMcpToken(ctx.host, user, name, token.access_token);
+				await catalog.retire(user, name);
+				await catalog.activate(user);
+				return new Response(null, { status: 204 });
+			},
+		},
+	];
+
 	const close = async (): Promise<void> => {
 		if (closed) return;
 		closed = true;
@@ -157,6 +279,7 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 		tools.length = 0;
 		serverExposures.clear();
 		await Promise.all(pending);
+		oauthFlows.clear();
 		catalog.close();
 	};
 
@@ -240,6 +363,7 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 	return {
 		extension,
 		perUserTools: catalog.perUserTools,
+		routes,
 		userServices: catalog.userServices,
 		surfaces: { settings: catalog.settings },
 		conversationCreated: activate,

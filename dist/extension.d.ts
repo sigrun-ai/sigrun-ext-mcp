@@ -3,9 +3,21 @@
 import { type Extension } from "@earendil-works/pi-durable";
 import { type CatalogSettingsSection, type OwnerEvent, type SigrunHost, type UserService } from "./user-servers.js";
 export declare const MCP_EXTENSION_NAME = "sigrun.mcp";
+export interface ExtensionRouteContribution {
+    readonly method: "POST";
+    readonly path: string;
+    readonly auth: "user";
+    handler(request: Request, ctx: {
+        readonly principal?: {
+            readonly user?: string;
+        };
+        readonly host: SigrunHost;
+    }): Promise<Response>;
+}
 export interface McpWiring {
     readonly extension: Extension;
     readonly perUserTools: boolean;
+    readonly routes: readonly ExtensionRouteContribution[];
     readonly userServices: readonly UserService[];
     readonly surfaces: {
         readonly settings: readonly CatalogSettingsSection[];

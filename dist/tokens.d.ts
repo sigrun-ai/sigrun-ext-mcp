@@ -34,6 +34,8 @@ export declare function loadMcpTokens(env?: NodeJS.ProcessEnv): McpTokenStore;
 export declare function saveMcpTokens(store: McpTokenStore, env?: NodeJS.ProcessEnv): void;
 /** Store one server's token (merge over the existing store). */
 export declare function storeMcpToken(name: string, token: McpStoredToken, env?: NodeJS.ProcessEnv): McpTokenStore;
+/** Store the exact credential shape read by per-user service launches. */
+export declare function storeUserMcpToken(host: import("./user-servers.js").SigrunHost, user: string, server: string, accessToken: string): Promise<void>;
 /**
  * The env var a stored token is injected as (ruling 3): stdio MCP servers
  * take credentials through env, not HTTP headers. A server with both an

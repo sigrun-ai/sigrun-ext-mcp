@@ -47,7 +47,9 @@ function outputStream(
 	});
 }
 
-export function createCatalogHost(): CatalogHostDouble {
+export function createCatalogHost(options: {
+	readonly stopOnLastRelease?: boolean;
+} = {}): CatalogHostDouble {
 	const userTools = new Map<string, ToolRegistration[]>();
 	const actingUsers = new Map<ConversationId, string>();
 	const settings = new Map<string, Record<string, unknown>>();
@@ -107,6 +109,12 @@ export function createCatalogHost(): CatalogHostDouble {
 				if (released) return;
 				released = true;
 				launched.releases += 1;
+				if (options.stopOnLastRelease === true && live.get(key) === launched) {
+					// Core stops an unheld service after its idle timer; immediate
+					// disposal models that transition without slowing this test.
+					live.delete(key);
+					launched.child.kill("SIGTERM");
+				}
 			},
 		};
 	};

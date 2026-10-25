@@ -98,6 +98,12 @@ export async function runCli(
 		);
 		return 1;
 	}
+	if (server.credentials !== "shared") {
+		io.stderr.write(
+			`error: server "${parsed.server}" uses per-user credentials; use POST /v1/ext/sigrun-mcp/oauth/${parsed.server}/start instead\n`,
+		);
+		return 1;
+	}
 	if (!isStdioServer(server) || server.oauth === undefined) {
 		io.stderr.write(
 			`error: server "${parsed.server}" has no oauth block in the MCP config\n`,

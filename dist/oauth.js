@@ -128,6 +128,46 @@ export function buildAuthorizeUrl(oauth, redirectUri, codeChallenge) {
     }
     return url.toString();
 }
+const USER_FLOW_TTL_MS = 10 * 60_000;
+/** In-memory PKCE state for extension routes; the caller owns token storage. */
+export function createUserOauthFlows(now = Date.now) {
+    const pending = new Map();
+    const key = (user, server) => JSON.stringify([user, server]);
+    return {
+        start(user, server, oauth, redirectUri) {
+            const { verifier, challenge } = makePkcePair();
+            pending.set(key(user, server), {
+                verifier,
+                redirectUri,
+                expiresAt: now() + USER_FLOW_TTL_MS,
+            });
+            return buildAuthorizeUrl(oauth, redirectUri, challenge);
+        },
+        take(user, server) {
+            const flowKey = key(user, server);
+            const flow = pending.get(flowKey);
+            if (flow === undefined)
+                return undefined;
+            // Claim before any asynchronous exchange so concurrent completions
+            // cannot reuse one authorization code or PKCE verifier.
+            pending.delete(flowKey);
+            if (flow.expiresAt <= now())
+                return undefined;
+            return flow;
+        },
+        release(user, server, flow) {
+            const flowKey = key(user, server);
+            // A newer start supersedes the old flow; an invalid paste must not
+            // restore stale state over its replacement.
+            if (!pending.has(flowKey) && flow.expiresAt > now()) {
+                pending.set(flowKey, flow);
+            }
+        },
+        clear() {
+            pending.clear();
+        },
+    };
+}
 /**
  * Run the flow for one server (the CLI-equivalent `runOauth`): start the
  * loopback listener, build + return the authorize URL, and expose

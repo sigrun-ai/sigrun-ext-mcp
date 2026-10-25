@@ -3,6 +3,8 @@
 import { defineDoc, defineExtension } from "@earendil-works/pi-durable";
 import { connectMcpServer } from "./client.js";
 import { loadMcpConfig, serverEnabled, } from "./config.js";
+import { createUserOauthFlows, exchangeCode, extractCode, } from "./oauth.js";
+import { storeUserMcpToken } from "./tokens.js";
 import { MCP_SERVERS_SECTION_KEY, partitionForSection, renderMcpServersSection, } from "./section.js";
 import { catalogEnabledFromSettings, createUserCatalog, sharedServerAllowed, discoverMcpTools, } from "./user-servers.js";
 export const MCP_EXTENSION_NAME = "sigrun.mcp";
@@ -53,6 +55,7 @@ export function createMcpExtension(host) {
     const serverExposures = new Map();
     const shared = Object.entries(config.servers).filter(([, server]) => server.credentials === "shared" && serverEnabled(server));
     const catalog = createUserCatalog(host, config.servers);
+    const oauthFlows = createUserOauthFlows();
     let closed = false;
     const pending = [];
     for (const [name, server] of shared) {
@@ -92,6 +95,105 @@ export function createMcpExtension(host) {
         if (event.owner !== undefined)
             await catalog.activate(event.owner);
     };
+    const errorResponse = (status, error) => Response.json({ error }, { status });
+    const serverFromRequest = (request) => {
+        const match = new URL(request.url).pathname.match(/\/v1\/ext\/sigrun-mcp\/oauth\/([^/]+)\/(?:start|complete)$/);
+        if (match === null)
+            return undefined;
+        try {
+            return decodeURIComponent(match[1]);
+        }
+        catch {
+            return undefined;
+        }
+    };
+    const oauthServer = (name) => {
+        if (name === undefined)
+            return undefined;
+        const server = config.servers[name];
+        if (server === undefined ||
+            server.credentials === "shared" ||
+            !serverEnabled(server) ||
+            !("oauth" in server) ||
+            server.oauth === undefined)
+            return undefined;
+        return { ...server, oauth: server.oauth };
+    };
+    const userFrom = (ctx) => ctx.principal?.user;
+    const routes = [
+        {
+            method: "POST",
+            path: "oauth/:server/start",
+            auth: "user",
+            handler: async (request, ctx) => {
+                const user = userFrom(ctx);
+                if (user === undefined)
+                    return errorResponse(400, "no_pending_flow");
+                const name = serverFromRequest(request);
+                const server = oauthServer(name);
+                if (name === undefined || server === undefined) {
+                    return errorResponse(404, "unknown_server");
+                }
+                // No listener: the browser is redirected back to the complete
+                // endpoint, whose URL the user can paste from the address bar.
+                const redirectUri = new URL(`/v1/ext/sigrun-mcp/oauth/${encodeURIComponent(name)}/complete`, request.url).toString();
+                const url = oauthFlows.start(user, name, server.oauth, redirectUri);
+                return Response.json({ url });
+            },
+        },
+        {
+            method: "POST",
+            path: "oauth/:server/complete",
+            auth: "user",
+            handler: async (request, ctx) => {
+                const user = userFrom(ctx);
+                if (user === undefined)
+                    return errorResponse(400, "no_pending_flow");
+                const name = serverFromRequest(request);
+                const server = oauthServer(name);
+                if (name === undefined || server === undefined) {
+                    return errorResponse(404, "unknown_server");
+                }
+                let redirectedUrl;
+                try {
+                    const body = await request.json();
+                    if (typeof body !== "object" || body === null || Array.isArray(body) ||
+                        !("redirectedUrl" in body) ||
+                        typeof body.redirectedUrl !== "string" || body.redirectedUrl === "")
+                        throw new Error("invalid body");
+                    redirectedUrl = body.redirectedUrl;
+                }
+                catch {
+                    return errorResponse(400, "invalid_body");
+                }
+                const flow = oauthFlows.take(user, name);
+                if (flow === undefined)
+                    return errorResponse(400, "no_pending_flow");
+                let code;
+                try {
+                    const extracted = extractCode(redirectedUrl);
+                    if (!("code" in extracted))
+                        throw new Error("authorization failed");
+                    code = extracted.code;
+                }
+                catch {
+                    oauthFlows.release(user, name, flow);
+                    return errorResponse(400, "invalid_redirect");
+                }
+                let token;
+                try {
+                    token = await exchangeCode(server.oauth, code, flow.redirectUri, flow.verifier);
+                }
+                catch {
+                    return errorResponse(502, "exchange_failed");
+                }
+                await storeUserMcpToken(ctx.host, user, name, token.access_token);
+                await catalog.retire(user, name);
+                await catalog.activate(user);
+                return new Response(null, { status: 204 });
+            },
+        },
+    ];
     const close = async () => {
         if (closed)
             return;
@@ -103,6 +205,7 @@ export function createMcpExtension(host) {
         tools.length = 0;
         serverExposures.clear();
         await Promise.all(pending);
+        oauthFlows.clear();
         catalog.close();
     };
     const closeSystemClients = () => {
@@ -176,6 +279,7 @@ export function createMcpExtension(host) {
     return {
         extension,
         perUserTools: catalog.perUserTools,
+        routes,
         userServices: catalog.userServices,
         surfaces: { settings: catalog.settings },
         conversationCreated: activate,

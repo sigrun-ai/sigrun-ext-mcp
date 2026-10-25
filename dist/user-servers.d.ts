@@ -84,6 +84,7 @@ export interface UserCatalog {
     readonly userServices: readonly UserService[];
     readonly settings: readonly CatalogSettingsSection[];
     activate(user: string, ctx?: HandlerContext): Promise<void>;
+    retire(user: string, server: string): Promise<void>;
     exposures(user: string): ReadonlyMap<string, ServerExposure>;
     close(): void;
 }

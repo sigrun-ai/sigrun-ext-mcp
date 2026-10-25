@@ -292,6 +292,7 @@ export interface UserCatalog {
 	readonly userServices: readonly UserService[];
 	readonly settings: readonly CatalogSettingsSection[];
 	activate(user: string, ctx?: HandlerContext): Promise<void>;
+	retire(user: string, server: string): Promise<void>;
 	exposures(user: string): ReadonlyMap<string, ServerExposure>;
 	close(): void;
 }
@@ -443,6 +444,25 @@ export function createUserCatalog(
 		return current;
 	};
 
+	const retire = async (user: string, server: string): Promise<void> => {
+		if (closed) return;
+		const state = states.get(user);
+		if (state === undefined) return;
+		const current = state.refresh.then(async () => {
+			if (closed) return;
+			const connection = state.connections.get(server);
+			if (connection === undefined) return;
+			state.connections.delete(server);
+			// Core owns the process lifecycle: releasing the last handle only
+			// arms idle-stop. A live child keeps its old environment until that
+			// timer fires or it crashes; this host contract cannot force a stop.
+			connection.retire();
+			publish(user, state);
+		});
+		state.refresh = current;
+		await current;
+	};
+
 	const enabledServers = Object.entries(servers).filter(([, server]) => serverEnabled(server));
 	const settings: readonly CatalogSettingsSection[] =
 		enabledServers.length === 0
@@ -479,6 +499,7 @@ export function createUserCatalog(
 		userServices,
 		settings,
 		activate,
+		retire,
 		exposures: (user) => new Map(
 			personal.flatMap(([name]) => {
 				const exposure = states.get(user)?.connections.get(name)?.exposure;

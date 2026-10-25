@@ -269,6 +269,28 @@ export function createUserCatalog(host, servers) {
         state.refresh = current;
         return current;
     };
+    const retire = async (user, server) => {
+        if (closed)
+            return;
+        const state = states.get(user);
+        if (state === undefined)
+            return;
+        const current = state.refresh.then(async () => {
+            if (closed)
+                return;
+            const connection = state.connections.get(server);
+            if (connection === undefined)
+                return;
+            state.connections.delete(server);
+            // Core owns the process lifecycle: releasing the last handle only
+            // arms idle-stop. A live child keeps its old environment until that
+            // timer fires or it crashes; this host contract cannot force a stop.
+            connection.retire();
+            publish(user, state);
+        });
+        state.refresh = current;
+        await current;
+    };
     const enabledServers = Object.entries(servers).filter(([, server]) => serverEnabled(server));
     const settings = enabledServers.length === 0
         ? []
@@ -303,6 +325,7 @@ export function createUserCatalog(host, servers) {
         userServices,
         settings,
         activate,
+        retire,
         exposures: (user) => new Map(personal.flatMap(([name]) => {
             const exposure = states.get(user)?.connections.get(name)?.exposure;
             return exposure === undefined ? [] : [[name, exposure]];
