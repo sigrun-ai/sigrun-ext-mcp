@@ -7,7 +7,9 @@ export interface McpWiring {
     readonly extension: Extension;
     readonly perUserTools: boolean;
     readonly userServices: readonly UserService[];
-    readonly settingsSections: readonly CatalogSettingsSection[];
+    readonly surfaces: {
+        readonly settings: readonly CatalogSettingsSection[];
+    };
     conversationCreated(event: OwnerEvent): Promise<void>;
     runSettled(event: OwnerEvent): Promise<void>;
     onSettingsChanged(keys: readonly string[], user?: string): Promise<void>;

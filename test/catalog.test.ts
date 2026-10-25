@@ -53,6 +53,18 @@ async function openCatalog(
 	};
 }
 
+/** Mirror the settings surface's flat field merge and changed-key event. */
+async function saveCatalogSetting(
+	opened: OpenedCatalog,
+	user: string,
+	name: string,
+	enabled: boolean,
+): Promise<void> {
+	const next = { ...opened.double.settings.get(user), [name]: enabled };
+	await opened.double.host.stores.user(user).settings.set(next);
+	await opened.wiring.onSettingsChanged([name], user);
+}
+
 function shared(fields: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		command: process.execPath,
@@ -191,7 +203,7 @@ test("shared users allowlist gates calls and the caller's prompt section", async
 		await opened.wiring.ready;
 		const bobEvent = event(opened, "bob");
 		const aliceEvent = event(opened, "alice");
-		opened.double.setSettings("alice", { catalog: { acme: true } });
+		opened.double.setSettings("alice", { acme: true });
 		const registered = opened.wiring.extension.tools ?? [];
 		const result = await tool(registered, "acme/echo").execute(
 			{ name: "bob" }, api(bobEvent.id), CONTEXT,
@@ -285,8 +297,7 @@ test("opt-in is off until the user enables it", async () => {
 		await opened.wiring.conversationCreated(event(opened, "alice"));
 		expect(opened.double.launches).toHaveLength(0);
 		expect(names(opened.double.userTools.get("alice"))).toEqual([]);
-		opened.double.setSettings("alice", { catalog: { acme: true } });
-		await opened.wiring.onSettingsChanged(["catalog.acme"], "alice");
+		await saveCatalogSetting(opened, "alice", "acme", true);
 		expect(opened.double.launches).toHaveLength(1);
 		expect(names(opened.double.userTools.get("alice"))).toContain("acme/echo");
 	} finally {
@@ -294,13 +305,12 @@ test("opt-in is off until the user enables it", async () => {
 	}
 });
 
-test("a dotted disable write retires an idle service and unpublishes its tools", async () => {
+test("a flat disable write retires an idle service and unpublishes its tools", async () => {
 	const opened = await openCatalog({ acme: user() });
 	try {
 		await opened.wiring.conversationCreated(event(opened, "alice"));
 		expect(names(opened.double.userTools.get("alice"))).toContain("acme/echo");
-		opened.double.setSettings("alice", { catalog: { acme: false } });
-		await opened.wiring.onSettingsChanged(["catalog.acme"], "alice");
+		await saveCatalogSetting(opened, "alice", "acme", false);
 		expect(names(opened.double.userTools.get("alice"))).toEqual([]);
 		expect(opened.double.launches[0]?.releases).toBe(1);
 	} finally {
@@ -320,8 +330,7 @@ test("disable finishes an in-flight call then unpublishes and releases the servi
 		await opened.wiring.conversationCreated(event(opened, "alice"));
 		const tools = opened.double.userTools.get("alice")!;
 		const pending = tool(tools, "acme/hang").execute({}, api("alice-run"), CONTEXT);
-		opened.double.setSettings("alice", { catalog: { acme: false } });
-		await opened.wiring.onSettingsChanged(["catalog.acme"], "alice");
+		await saveCatalogSetting(opened, "alice", "acme", false);
 		expect(names(opened.double.userTools.get("alice"))).toEqual([]);
 		expect(opened.double.launches[0]?.releases).toBe(0);
 		await expect(pending).resolves.toMatchObject({ isError: false });
@@ -334,7 +343,7 @@ test("disable finishes an in-flight call then unpublishes and releases the servi
 test("a failed per-user connection does not stop another user", async () => {
 	const opened = await openCatalog({ acme: user() });
 	try {
-		opened.double.setSettings("alice", { catalog: { acme: false } });
+		opened.double.setSettings("alice", { acme: false });
 		const realConnect = opened.double.host.services.connect;
 		opened.double.host.services.connect = async (name, userName, ctx) => {
 			if (userName === "alice") throw new Error("synthetic alice failure");
@@ -352,21 +361,22 @@ test("a failed per-user connection does not stop another user", async () => {
 	}
 });
 
-test("the user settings section declares catalog toggles", async () => {
+test("the settings surface declares flat toggles and shared-authority help", async () => {
 	const opened = await openCatalog({
 		acme: user({ availability: "opt-in" }),
-		shared: shared(),
+		shared: shared({ sharedAuthority: "Synthetic shared test authority." }),
 	});
 	try {
-		expect(opened.wiring.settingsSections).toHaveLength(1);
-		const definition = opened.wiring.settingsSections[0];
+		expect(opened.wiring.surfaces.settings).toHaveLength(1);
+		expect("settingsSections" in opened.wiring).toBe(false);
+		const definition = opened.wiring.surfaces.settings[0];
 		expect(definition.scope).toBe("user");
 		expect(definition.form).toMatchObject({
 			root: {
 				children: [
-					expect.objectContaining({ name: "catalog.acme", default: false }),
+					expect.objectContaining({ name: "acme", default: false }),
 					expect.objectContaining({
-						name: "catalog.shared",
+						name: "shared",
 						default: true,
 						help: expect.stringContaining("Synthetic shared test authority"),
 					}),
@@ -375,9 +385,12 @@ test("the user settings section declares catalog toggles", async () => {
 		});
 		const sharedToggle = (definition.form.root.children as { help?: string }[])
 			.find((child) => child.help !== undefined);
-		expect(sharedToggle?.help).toContain(
-			"Shared MCP servers hand every permitted user's agent the admin's credential for that service.",
+		expect(sharedToggle?.help).toBe(
+			"Synthetic shared test authority. Shared MCP servers hand every permitted user's agent the admin's credential for that service.",
 		);
+		for (const child of definition.form.root.children as { name?: string }[]) {
+			expect(child.name).not.toMatch(/[./]/);
+		}
 	} finally {
 		await opened.close();
 	}

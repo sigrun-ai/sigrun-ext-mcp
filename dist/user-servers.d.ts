@@ -82,7 +82,7 @@ export interface CatalogSettingsSection {
 export interface UserCatalog {
     readonly perUserTools: boolean;
     readonly userServices: readonly UserService[];
-    readonly settingsSections: readonly CatalogSettingsSection[];
+    readonly settings: readonly CatalogSettingsSection[];
     activate(user: string, ctx?: HandlerContext): Promise<void>;
     exposures(user: string): ReadonlyMap<string, ServerExposure>;
     close(): void;

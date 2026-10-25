@@ -33,8 +33,25 @@ bare user install falls back to `~/.config/sigrun/mcp.json`; the
   `endpoint` event + message POSTs) is adopted automatically, so no adapter
   process is needed.
 - `headers` (remote) — extra request headers (auth etc.), sent on every
-  request.
-- `env` (stdio) — extra environment variables for the child process.
+  request. For per-user servers, configured `Authorization` is removed;
+  only that user's scoped token supplies it.
+- `env` (stdio) — extra environment variables for the child process. For
+  per-user servers, configured `MCP_ACCESS_TOKEN` is removed; only that
+  user's scoped token supplies it.
+- `credentials` — `"user"` (default) or `"shared"`. User-credential servers
+  start per user in the host's service jail; remote user servers connect
+  with the user's scoped token. Existing installs needing one system-wide
+  server must explicitly select `"shared"`.
+- `sharedAuthority` — required, non-empty one-line reason when
+  `credentials` is `"shared"`. Shared MCP servers hand every permitted
+  user's agent the admin's credential for that service; the settings
+  section displays this reason and warning beside the server.
+- `users` — optional string allowlist for a shared server. Only those
+  users may call its tools; this field is invalid for user-credential
+  servers. Ownerless calls fail closed.
+- `availability` — `"all"` (default) or `"opt-in"`. The per-user settings
+  section stores each server's enablement as a flat boolean keyed by its
+  bare server name. `"all"` starts enabled; `"opt-in"` starts disabled.
 - `enabled` (default `true`) / `disabled` — skip the server entirely. Set one,
   never both: a server that is simultaneously on and off is a config error and
   fails loudly.
@@ -49,6 +66,11 @@ bare user install falls back to `~/.config/sigrun/mcp.json`; the
 - `oauth` (stdio) — the authorization-code (PKCE) flow block; see
   `sigrun-ext-mcp oauth <server>` (the CLI mints and stores a token; the spawn
   injects it).
+
+`userServers` is the separate admin policy for user-supplied servers:
+`"none"` (default), `"remote"`, or `"all"`. It is distinct from the admin
+catalog's `credentials` and `availability` fields above. Catalog names
+starting `u_` are reserved for those user-supplied servers and rejected.
 
 ## Exposure: how tools reach callers
 

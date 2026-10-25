@@ -78,16 +78,13 @@ function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 export function catalogEnabledFromSettings(name, server, settings) {
-    const catalog = settings.catalog;
-    if (catalog === undefined)
-        return server.availability !== "opt-in";
-    if (!isRecord(catalog))
-        throw new Error("mcp user settings: catalog must be an object");
-    const enabled = catalog[name];
+    // Settings surfaces persist form fields as top-level values; the server
+    // name itself is the key, not a nested catalog object.
+    const enabled = settings[name];
     if (enabled === undefined)
         return server.availability !== "opt-in";
     if (typeof enabled !== "boolean") {
-        throw new Error(`mcp user settings: catalog.${name} must be a boolean`);
+        throw new Error(`mcp user settings: ${name} must be a boolean`);
     }
     return enabled;
 }
@@ -156,6 +153,11 @@ function trackConnection(name, client, discovered) {
 }
 function errorMessage(cause) {
     return cause instanceof Error ? cause.message : String(cause);
+}
+function sharedAuthorityHelp(reason) {
+    const authority = reason?.trim() ?? "Shared authority was not stated.";
+    const sentence = /[.!?]$/.test(authority) ? authority : `${authority}.`;
+    return `${sentence} Shared MCP servers hand every permitted user's agent the admin's credential for that service.`;
 }
 export function createUserCatalog(host, servers) {
     const states = new Map();
@@ -268,7 +270,7 @@ export function createUserCatalog(host, servers) {
         return current;
     };
     const enabledServers = Object.entries(servers).filter(([, server]) => serverEnabled(server));
-    const settingsSections = enabledServers.length === 0
+    const settings = enabledServers.length === 0
         ? []
         : [{
                 id: "catalog",
@@ -284,12 +286,12 @@ export function createUserCatalog(host, servers) {
                         onSubmit: "save",
                         children: enabledServers.map(([name, server]) => ({
                             type: "toggle",
-                            name: `catalog.${name}`,
+                            name,
                             label: name,
                             default: server.availability !== "opt-in",
                             ...(server.credentials === "shared"
                                 ? {
-                                    help: `${server.sharedAuthority} Shared MCP servers hand every permitted user's agent the admin's credential for that service.`,
+                                    help: sharedAuthorityHelp(server.sharedAuthority),
                                 }
                                 : {}),
                         })),
@@ -299,7 +301,7 @@ export function createUserCatalog(host, servers) {
     return {
         perUserTools: personal.length > 0,
         userServices,
-        settingsSections,
+        settings,
         activate,
         exposures: (user) => new Map(personal.flatMap(([name]) => {
             const exposure = states.get(user)?.connections.get(name)?.exposure;

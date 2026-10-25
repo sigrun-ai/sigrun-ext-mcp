@@ -44,7 +44,7 @@ export interface McpWiring {
 	readonly extension: Extension;
 	readonly perUserTools: boolean;
 	readonly userServices: readonly UserService[];
-	readonly settingsSections: readonly CatalogSettingsSection[];
+	readonly surfaces: { readonly settings: readonly CatalogSettingsSection[] };
 	conversationCreated(event: OwnerEvent): Promise<void>;
 	runSettled(event: OwnerEvent): Promise<void>;
 	onSettingsChanged(keys: readonly string[], user?: string): Promise<void>;
@@ -241,15 +241,15 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 		extension,
 		perUserTools: catalog.perUserTools,
 		userServices: catalog.userServices,
-		settingsSections: catalog.settingsSections,
+		surfaces: { settings: catalog.settings },
 		conversationCreated: activate,
 		runSettled: activate,
 		onSettingsChanged: async (keys, user) => {
-			// Settings surfaces publish dotted field paths; accepting the parent
-			// key also covers whole-object writes through the raw settings API.
+			// Core persists and reports flat form-field names. Only configured
+			// server names trigger reconciliation; unrelated settings stay inert.
 			if (
 				user !== undefined &&
-				keys.some((key) => key === "catalog" || key.startsWith("catalog."))
+				keys.some((key) => Object.hasOwn(config.servers, key))
 			) {
 				await catalog.activate(user);
 			}

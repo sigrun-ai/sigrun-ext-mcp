@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   service.
 
 ### Fixed
+- Catalog enablement now mounts through `surfaces.settings` and uses core's
+  actual flat settings shape: each toggle and changed key is the bare server
+  name. Shared-authority help is punctuated and guarded against missing
+  programmatic input.
 - Prompt sections resolve the conversation owner through the harness's
   committed-read surface instead of the server-bound identity bridge, so
   harness-only boots cannot hang while preparing a request.

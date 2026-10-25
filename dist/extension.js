@@ -177,14 +177,14 @@ export function createMcpExtension(host) {
         extension,
         perUserTools: catalog.perUserTools,
         userServices: catalog.userServices,
-        settingsSections: catalog.settingsSections,
+        surfaces: { settings: catalog.settings },
         conversationCreated: activate,
         runSettled: activate,
         onSettingsChanged: async (keys, user) => {
-            // Settings surfaces publish dotted field paths; accepting the parent
-            // key also covers whole-object writes through the raw settings API.
+            // Core persists and reports flat form-field names. Only configured
+            // server names trigger reconciliation; unrelated settings stay inert.
             if (user !== undefined &&
-                keys.some((key) => key === "catalog" || key.startsWith("catalog."))) {
+                keys.some((key) => Object.hasOwn(config.servers, key))) {
                 await catalog.activate(user);
             }
             // The host has no settings-read hook. A visit that changes nothing
