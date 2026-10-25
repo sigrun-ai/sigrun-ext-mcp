@@ -29,7 +29,7 @@ import {
 	parseMcpConfig,
 } from "../src/config.js";
 import { spawnEnvWithToken, storeMcpToken, resolveMcpTokenPath, loadMcpTokens } from "../src/tokens.js";
-import { startOauth, extractCode, buildAuthorizeUrl } from "../src/oauth.js";
+import { startOauth, extractCode, buildAuthorizeUrl, createUserOauthFlows } from "../src/oauth.js";
 import { createMcpExtension, type McpWiring } from "../src/extension.js";
 import { parseCliArgs, runCli } from "../src/cli.js";
 import { createCatalogHost, type CatalogHostDouble } from "./catalog-host.js";
@@ -828,6 +828,32 @@ test("the CLI refuses per-user OAuth and names the extension start route", async
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+test("starting a flow proactively evicts every expired pending flow", () => {
+	let now = 1_000;
+	const flows = createUserOauthFlows(() => now);
+	const oauth = {
+		authorizeUrl: "https://as.example.invalid/authorize",
+		tokenUrl: "https://as.example.invalid/token",
+		clientId: "acme-client",
+	};
+	const redirectUri = "https://sigrun.example.invalid/callback";
+	const original = flows.start("alice", "acme", oauth, redirectUri);
+	flows.start("bob", "acme", oauth, redirectUri);
+	flows.start("alice", "files", oauth, redirectUri);
+	expect(flows.pendingCount()).toBe(3);
+	now += 10 * 60_000;
+	flows.start("mallory", "acme", oauth, redirectUri);
+	expect(flows.pendingCount()).toBe(1);
+	for (const [user, server] of [["alice", "acme"], ["bob", "acme"], ["alice", "files"]]) {
+		expect(flows.take(user, server)).toBeUndefined();
+		const replacement = flows.start(user, server, oauth, redirectUri);
+		expect(replacement).not.toBe(original);
+		expect(new URL(replacement).searchParams.get("code_challenge")).not.toBe(
+			new URL(original).searchParams.get("code_challenge"),
+		);
+	}
+});
+
 test("the CLI arg parser accepts the oauth subcommand shape", () => {
 	expect(parseCliArgs(["oauth", "stub"])).toEqual({
 		command: "oauth",

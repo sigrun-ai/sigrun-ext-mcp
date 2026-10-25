@@ -135,11 +135,18 @@ export function createUserOauthFlows(now = Date.now) {
     const key = (user, server) => JSON.stringify([user, server]);
     return {
         start(user, server, oauth, redirectUri) {
+            const startedAt = now();
+            // Opportunistic sweeping avoids factory timers while bounding state
+            // to distinct user/server flows started within one TTL window.
+            for (const [flowKey, flow] of pending) {
+                if (flow.expiresAt <= startedAt)
+                    pending.delete(flowKey);
+            }
             const { verifier, challenge } = makePkcePair();
             pending.set(key(user, server), {
                 verifier,
                 redirectUri,
-                expiresAt: now() + USER_FLOW_TTL_MS,
+                expiresAt: startedAt + USER_FLOW_TTL_MS,
             });
             return buildAuthorizeUrl(oauth, redirectUri, challenge);
         },
@@ -162,6 +169,9 @@ export function createUserOauthFlows(now = Date.now) {
             if (!pending.has(flowKey) && flow.expiresAt > now()) {
                 pending.set(flowKey, flow);
             }
+        },
+        pendingCount() {
+            return pending.size;
         },
         clear() {
             pending.clear();

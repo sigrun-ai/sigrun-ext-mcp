@@ -207,11 +207,17 @@ export function createUserOauthFlows(now: () => number = Date.now) {
 			oauth: McpOAuthConfig,
 			redirectUri: string,
 		): string {
+			const startedAt = now();
+			// Opportunistic sweeping avoids factory timers while bounding state
+			// to distinct user/server flows started within one TTL window.
+			for (const [flowKey, flow] of pending) {
+				if (flow.expiresAt <= startedAt) pending.delete(flowKey);
+			}
 			const { verifier, challenge } = makePkcePair();
 			pending.set(key(user, server), {
 				verifier,
 				redirectUri,
-				expiresAt: now() + USER_FLOW_TTL_MS,
+				expiresAt: startedAt + USER_FLOW_TTL_MS,
 			});
 			return buildAuthorizeUrl(oauth, redirectUri, challenge);
 		},
@@ -232,6 +238,9 @@ export function createUserOauthFlows(now: () => number = Date.now) {
 			if (!pending.has(flowKey) && flow.expiresAt > now()) {
 				pending.set(flowKey, flow);
 			}
+		},
+		pendingCount(): number {
+			return pending.size;
 		},
 		clear(): void {
 			pending.clear();

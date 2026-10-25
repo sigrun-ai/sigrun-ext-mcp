@@ -55,6 +55,7 @@ export declare function createUserOauthFlows(now?: () => number): {
     start(user: string, server: string, oauth: McpOAuthConfig, redirectUri: string): string;
     take(user: string, server: string): UserOauthFlow | undefined;
     release(user: string, server: string, flow: UserOauthFlow): void;
+    pendingCount(): number;
     clear(): void;
 };
 /** Oauth start options (defaults match the CLI: 5-minute timeout). */
