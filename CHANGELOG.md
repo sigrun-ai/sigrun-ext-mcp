@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- MCP catalog entries default to per-user credentials, with lazy per-user
+  stdio services, scoped token injection, remote connections, and tools
+  published only for their owner. Opt-in availability and per-user settings
+  control enablement; disabling removes tools and drains active calls.
+- Shared entries require `sharedAuthority`, retain system-tool behavior,
+  and enforce their optional user allowlist and enablement at call time.
+  Prompt sections list only servers available to the calling user.
+
 ### Security
 - Stdio servers no longer inherit sigrun's environment. They are spawned
   with an allowlist (`PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_*`, `TZ`,

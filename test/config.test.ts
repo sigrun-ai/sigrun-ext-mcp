@@ -70,6 +70,93 @@ test("a server entry missing command/args fails loudly", () => {
 	).toThrow(/needs a string "command" and a string\[\] "args"/);
 });
 
+test("catalog credentials default to user and availability defaults to all", () => {
+	const config = parseMcpConfig(
+		JSON.stringify({
+			servers: {
+				personal: { command: "node", args: ["s.mjs"] },
+				admin: {
+					command: "node",
+					args: ["s.mjs"],
+					credentials: "shared",
+					sharedAuthority: "Synthetic operator-approved authority",
+					users: ["alice"],
+					availability: "opt-in",
+				},
+			},
+		}),
+		"/x/mcp.json",
+	);
+	expect(config.servers.personal?.credentials ?? "user").toBe("user");
+	expect(config.servers.personal?.availability ?? "all").toBe("all");
+	expect(config.servers.admin?.credentials).toBe("shared");
+	expect(config.servers.admin?.sharedAuthority).toBe(
+		"Synthetic operator-approved authority",
+	);
+	expect(config.servers.admin?.users).toEqual(["alice"]);
+	expect(config.servers.admin?.availability).toBe("opt-in");
+});
+
+test("shared credentials require a non-empty authority naming the server", () => {
+	for (const authority of [undefined, "", "   "]) {
+		expect(() =>
+			parseMcpConfig(
+				JSON.stringify({
+					servers: {
+						acme: {
+							command: "node",
+							args: [],
+							credentials: "shared",
+							...(authority === undefined ? {} : { sharedAuthority: authority }),
+						},
+					},
+				}),
+				"/x/mcp.json",
+			),
+		).toThrow(/server "acme".*sharedAuthority/);
+	}
+});
+
+test("the reserved catalog prefix and per-user users list are config errors", () => {
+	expect(() =>
+		parseMcpConfig(
+			JSON.stringify({
+				servers: { u_personal: { command: "node", args: [] } },
+			}),
+			"/x/mcp.json",
+		),
+	).toThrow(/server "u_personal".*reserved/);
+	expect(() =>
+		parseMcpConfig(
+			JSON.stringify({
+				servers: {
+					acme: { command: "node", args: [], users: ["alice"] },
+				},
+			}),
+			"/x/mcp.json",
+		),
+	).toThrow(/server "acme".*users.*shared/);
+});
+
+test("catalog field shapes fail loudly", () => {
+	const invalid = [
+		{ credentials: "other" },
+		{ availability: "some" },
+		{ users: "alice", credentials: "shared", sharedAuthority: "test" },
+		{ users: ["alice", 1], credentials: "shared", sharedAuthority: "test" },
+	];
+	for (const fields of invalid) {
+		expect(() =>
+			parseMcpConfig(
+				JSON.stringify({
+					servers: { acme: { command: "node", args: [], ...fields } },
+				}),
+				"/x/mcp.json",
+			),
+		).toThrow(/server "acme"/);
+	}
+});
+
 test("a valid config parses with optional fields preserved", () => {
 	const config = parseMcpConfig(
 		JSON.stringify({

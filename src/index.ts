@@ -1,6 +1,7 @@
 /** sigrun-ext-mcp: register MCP server tools as pi-durable tools. */
 export { createMcpExtension, MCP_EXTENSION_NAME } from "./extension.js";
 export type { McpWiring } from "./extension.js";
+export type { SigrunHost, UserService, ServiceSpec } from "./user-servers.js";
 export { connectMcpServer, McpClient } from "./client.js";
 export {
 	loadMcpConfig,
@@ -34,8 +35,8 @@ export type { OauthFlow, StartOauthOptions } from "./oauth.js";
 export { parseCliArgs, runCli } from "./cli.js";
 import { createMcpExtension, type McpWiring } from "./extension.js";
 
-/**
- * The sigrun extension-package contract (src/harness/loader.ts): the default
- * export is a factory taking no arguments, returning `{ extension }`.
- */
-export default createMcpExtension satisfies () => McpWiring;
+/** The required host parameter keeps this factory at arity one: sigrun's
+ * loader does not pass a host to optional/defaulted (length-zero) factories. */
+export default createMcpExtension satisfies (
+	host: import("./user-servers.js").SigrunHost,
+) => McpWiring;
