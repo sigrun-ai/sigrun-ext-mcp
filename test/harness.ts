@@ -79,6 +79,7 @@ export async function openMcpHarness(
 			),
 		});
 		wiring = createMcpExtension(double.host);
+		if (wiring.perUserTools) double.declarePerUserTools();
 	} finally {
 		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
 		else process.env[MCP_CONFIG_ENV] = prior;

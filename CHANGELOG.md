@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   service.
 
 ### Fixed
+- Per-user tool publication is declared even with an empty or shared-only
+  catalog, so lifecycle activation and prompt rendering no longer fail when
+  there are no personal catalog servers.
 - Catalog enablement now mounts through `surfaces.settings` and uses core's
   actual flat settings shape: each toggle and changed key is the bare server
   name. Shared-authority help is punctuated and guarded against missing

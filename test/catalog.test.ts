@@ -41,6 +41,7 @@ async function openCatalog(
 		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
 		else process.env[MCP_CONFIG_ENV] = prior;
 	}
+	if (wiring.perUserTools) double.declarePerUserTools();
 	double.registerServices(wiring.userServices);
 	return {
 		wiring,
@@ -141,6 +142,19 @@ async function section(
 		),
 	);
 }
+
+test("shared-only catalogs keep lifecycle activation and prompt sections working", async () => {
+	const opened = await openCatalog({ acme: shared() });
+	try {
+		await opened.wiring.ready;
+		const alice = event(opened, "alice");
+		await opened.wiring.runSettled(alice);
+		expect(opened.double.userTools.get("alice")).toEqual([]);
+		await expect(section(opened, alice.id)).resolves.toContain("- acme:");
+	} finally {
+		await opened.close();
+	}
+});
 
 test("section render never waits for an unbound host identity bridge", async () => {
 	const opened = await openCatalog({ acme: shared() });

@@ -22,6 +22,7 @@ export interface LaunchedService {
 
 export interface CatalogHostDouble {
 	readonly host: SigrunHost;
+	declarePerUserTools(): void;
 	readonly userTools: Map<string, ToolRegistration[]>;
 	readonly actingUsers: Map<ConversationId, string>;
 	readonly settings: Map<string, Record<string, unknown>>;
@@ -57,6 +58,7 @@ export function createCatalogHost(options: {
 	const launches: LaunchedService[] = [];
 	const live = new Map<string, LaunchedService>();
 	let declarations: readonly UserService[] = [];
+	let perUserToolsDeclared = false;
 
 	const connect = async (
 		name: string,
@@ -122,6 +124,7 @@ export function createCatalogHost(options: {
 	const host: SigrunHost = {
 		tools: {
 			setUserTools: (user, tools) => {
+				if (!perUserToolsDeclared) throw new Error("perUserTools not declared");
 				userTools.set(user, [...tools]);
 			},
 		},
@@ -160,6 +163,9 @@ export function createCatalogHost(options: {
 		settings,
 		secrets,
 		launches,
+		declarePerUserTools: () => {
+			perUserToolsDeclared = true;
+		},
 		registerServices: (services) => {
 			declarations = services;
 		},

@@ -74,9 +74,6 @@ export async function discoverMcpTools(name, server, client) {
         },
     };
 }
-function isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 export function catalogEnabledFromSettings(name, server, settings) {
     // Settings surfaces persist form fields as top-level values; the server
     // name itself is the key, not a nested catalog object.
@@ -403,7 +400,7 @@ export function createUserCatalog(host, servers, initialMode = "none") {
         });
     }
     return {
-        perUserTools: personal.length > 0,
+        perUserTools: true,
         userServices,
         settings,
         activate,

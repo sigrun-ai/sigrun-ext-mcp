@@ -84,6 +84,7 @@ describe("user-supplied MCP server lifecycle", () => {
 		const double = createCatalogHost();
 		cleanups.push(() => double.close());
 		const wiring = createMcpExtension(double.host);
+		if (wiring.perUserTools) double.declarePerUserTools();
 		cleanups.push(() => wiring.close());
 		expect(process.listenerCount("exit")).toBe(before + 1);
 		await wiring.close();
@@ -95,6 +96,7 @@ describe("user-supplied MCP server lifecycle", () => {
 		cleanups.push(() => double.close());
 		double.setSettings("alice", settings({ acme: { command: "acme-stdio", args: [] } }));
 		const catalog = createUserCatalog(double.host, {}, "none");
+		double.declarePerUserTools();
 		cleanups.push(() => catalog.close());
 		await catalog.activate("alice");
 		expect(double.launches).toHaveLength(0);
@@ -111,6 +113,7 @@ describe("user-supplied MCP server lifecycle", () => {
 			local: { command: "acme-stdio", args: [] },
 		}));
 		const catalog = createUserCatalog(double.host, {}, "remote");
+		double.declarePerUserTools();
 		cleanups.push(() => catalog.close());
 		await catalog.activate("alice");
 		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
@@ -128,6 +131,7 @@ describe("user-supplied MCP server lifecycle", () => {
 			local: { command: "acme-stdio", args: [] },
 		}));
 		const catalog = createUserCatalog(double.host, {}, "all");
+		double.declarePerUserTools();
 		cleanups.push(() => catalog.close());
 		await catalog.activate("alice");
 		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
@@ -144,6 +148,7 @@ describe("user-supplied MCP server lifecycle", () => {
 		double.setSettings("alice", settings({ u_acme: { url: "https://example.invalid/mcp" } }));
 		double.setSettings("bob", settings({ acme: { url: remote.url } }));
 		const catalog = createUserCatalog(double.host, {}, "remote");
+		double.declarePerUserTools();
 		cleanups.push(() => catalog.close());
 		await Promise.all([catalog.activate("alice"), catalog.activate("bob")]);
 		expect(double.userTools.get("alice")).toEqual([]);
@@ -158,6 +163,7 @@ describe("user-supplied MCP server lifecycle", () => {
 		cleanups.push(() => double.close());
 		double.setSettings("alice", settings(JSON.stringify({ acme: { url: remote.url } })));
 		const catalog = createUserCatalog(double.host, {}, "remote");
+		double.declarePerUserTools();
 		cleanups.push(() => catalog.close());
 		await catalog.activate("alice");
 		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
@@ -169,6 +175,7 @@ describe("user-supplied MCP server lifecycle", () => {
 		cleanups.push(() => double.close());
 		double.setSettings("alice", settings("  \n"));
 		const catalog = createUserCatalog(double.host, {}, "remote");
+		double.declarePerUserTools();
 		cleanups.push(() => catalog.close());
 		await catalog.activate("alice");
 		expect(double.userTools.get("alice")).toEqual([]);
@@ -181,6 +188,7 @@ describe("user-supplied MCP server lifecycle", () => {
 		cleanups.push(() => double.close());
 		double.setSettings("alice", settings("{not-json"));
 		const catalog = createUserCatalog(double.host, {}, "remote");
+		double.declarePerUserTools();
 		cleanups.push(() => catalog.close());
 		await catalog.activate("alice");
 		expect(double.userTools.get("alice")).toEqual([]);
@@ -191,6 +199,7 @@ describe("user-supplied MCP server lifecycle", () => {
 		const double = createCatalogHost();
 		cleanups.push(() => double.close());
 		const catalog = createUserCatalog(double.host, {}, "remote");
+		double.declarePerUserTools();
 		cleanups.push(() => catalog.close());
 		const section = catalog.settings.find((item) => item.id === "user-servers");
 		expect(section?.scope).toBe("user");
@@ -200,7 +209,9 @@ describe("user-supplied MCP server lifecycle", () => {
 		})).toMatchObject({ ok: true });
 	});
 
-	it("retires connected URL tools for every user when a lifecycle event observes none", async () => {
+	it("keeps URL tools across all to remote and retires them at none", async () => {
+		// The all-mode stdio refusal above is intentional; this URL fixture
+		// covers the permitted side of the same policy transitions.
 		const remote = await fakeMcpServer();
 		cleanups.push(remote.close);
 		const dir = await mkdtemp(join(tmpdir(), "acme-user-servers-"));
@@ -220,6 +231,7 @@ describe("user-supplied MCP server lifecycle", () => {
 			if (prior === undefined) delete process.env.SIGRUN_MCP_CONFIG;
 			else process.env.SIGRUN_MCP_CONFIG = prior;
 		}
+		if (wiring.perUserTools) double.declarePerUserTools();
 		cleanups.push(() => wiring.close());
 		await Promise.all([
 			wiring.conversationCreated({ conversationId: ROOT_CONVERSATION_ID, owner: "alice" }),
@@ -228,6 +240,11 @@ describe("user-supplied MCP server lifecycle", () => {
 		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
 		expect(double.userTools.get("bob")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
 		const before = remote.connections();
+		await writeFile(path, JSON.stringify({ servers: {}, userServers: "remote" }));
+		await wiring.runSettled({ conversationId: ROOT_CONVERSATION_ID, owner: "alice" });
+		expect(double.userTools.get("alice")?.map((item) => item.name)).toEqual(["u_acme/ping"]);
+		expect(double.userTools.get("bob")?.map((item) => item.name)).toEqual(["u_acme/ping"]);
+		expect(remote.connections()).toBe(before);
 		const tool = double.userTools.get("alice")?.[0];
 		expect(tool).toBeDefined();
 		await writeFile(path, JSON.stringify({ servers: {}, userServers: "none" }));
@@ -262,6 +279,7 @@ describe("user-supplied MCP server lifecycle", () => {
 			if (prior === undefined) delete process.env.SIGRUN_MCP_CONFIG;
 			else process.env.SIGRUN_MCP_CONFIG = prior;
 		}
+		if (wiring.perUserTools) double.declarePerUserTools();
 		cleanups.push(() => wiring.close());
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		await writeFile(path, "{malformed");

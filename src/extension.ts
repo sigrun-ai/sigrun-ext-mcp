@@ -410,12 +410,6 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 		conversationCreated: activate,
 		runSettled: activate,
 		onSettingsChanged: async (keys, user) => {
-			if (keys.includes("userServers")) {
-				// Server scope has no user argument: every active user must lose
-				// newly disallowed tools, not just the user who wrote settings.
-				await refreshPolicy();
-				return;
-			}
 			if (
 				user !== undefined &&
 				(keys.includes("servers") || keys.some((key) => Object.hasOwn(config.servers, key)))

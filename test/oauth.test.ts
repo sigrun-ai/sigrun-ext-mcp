@@ -423,6 +423,7 @@ async function openRouteFixture(
 		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
 		else process.env[MCP_CONFIG_ENV] = prior;
 	}
+	if (wiring.perUserTools) double.declarePerUserTools();
 	double.registerServices(wiring.userServices);
 	const route = (suffix: string) => {
 		const found = wiring.routes.find(

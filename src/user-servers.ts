@@ -172,10 +172,6 @@ export async function discoverMcpTools(
 	};
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 export function catalogEnabledFromSettings(
 	name: string,
 	server: McpServerConfig,
@@ -586,7 +582,7 @@ export function createUserCatalog(
 	}
 
 	return {
-		perUserTools: personal.length > 0,
+		perUserTools: true,
 		userServices,
 		settings,
 		activate,
