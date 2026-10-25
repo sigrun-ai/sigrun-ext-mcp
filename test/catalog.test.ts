@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { expect, test } from "vitest";
@@ -175,7 +177,7 @@ test("catalog servers are lazy and each user gets a process with their own token
 		const aliceSection = await section(opened, aliceEvent.id);
 		expect(aliceSection).toContain("acme");
 		expect(aliceSection).not.toContain("bob");
-		expect(names(opened.double.userTools.get("bob"))).not.toContain("acme@alice");
+		expect(JSON.stringify(bobResult)).not.toContain("alice-token");
 	} finally {
 		await opened.close();
 	}
@@ -218,6 +220,65 @@ test("shared tools reject an unidentified owner instead of lending authority", a
 	}
 });
 
+test("remote user connections never inherit configured authorization", async () => {
+	const authorization: (string | undefined)[] = [];
+	const remote = createServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+		request.on("end", () => {
+			const frame = JSON.parse(body) as { id?: number; method: string };
+			authorization.push(request.headers.authorization);
+			if (frame.id === undefined) {
+				response.writeHead(202).end();
+				return;
+			}
+			const result = frame.method === "initialize"
+				? { protocolVersion: "2025-06-18", capabilities: {} }
+				: { tools: [] };
+			response.setHeader("content-type", "application/json");
+			response.end(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }));
+		});
+	});
+	await new Promise<void>((resolve) => remote.listen(0, "127.0.0.1", resolve));
+	const address = remote.address() as AddressInfo;
+	const opened = await openCatalog({
+		acme: {
+			url: `http://127.0.0.1:${address.port}/mcp`,
+			headers: { aUtHoRiZaTiOn: "Bearer configured-token" },
+			credentials: "user",
+		},
+	});
+	try {
+		await opened.wiring.conversationCreated(event(opened, "alice"));
+		expect(authorization).not.toHaveLength(0);
+		expect(authorization.every((value) => value === undefined)).toBe(true);
+		opened.double.setSecret("bob", "token:acme", "bob-token");
+		await opened.wiring.conversationCreated(event(opened, "bob"));
+		expect(authorization.at(-1)).toBe("Bearer bob-token");
+	} finally {
+		await opened.close();
+		await new Promise<void>((resolve, reject) => {
+			remote.close((error) => error === undefined ? resolve() : reject(error));
+		});
+	}
+});
+
+test("a missing scoped token removes the configured stdio credential", async () => {
+	const opened = await openCatalog({
+		acme: user({ env: { STUB_ENV_TOOL: "1", MCP_ACCESS_TOKEN: "configured-token" } }),
+	});
+	try {
+		await opened.wiring.conversationCreated(event(opened, "alice"));
+		expect(opened.double.launches[0]?.spec.env?.MCP_ACCESS_TOKEN).toBeUndefined();
+		const result = await tool(opened.double.userTools.get("alice")!, "acme/getenv").execute(
+			{ name: "MCP_ACCESS_TOKEN" }, api("alice-run"), CONTEXT,
+		);
+		expect(result.output).toEqual([{ type: "text", text: "" }]);
+	} finally {
+		await opened.close();
+	}
+});
+
 test("opt-in is off until the user enables it", async () => {
 	const opened = await openCatalog({ acme: user({ availability: "opt-in" }) });
 	try {
@@ -225,9 +286,23 @@ test("opt-in is off until the user enables it", async () => {
 		expect(opened.double.launches).toHaveLength(0);
 		expect(names(opened.double.userTools.get("alice"))).toEqual([]);
 		opened.double.setSettings("alice", { catalog: { acme: true } });
-		await opened.wiring.onSettingsChanged(["catalog"], "alice");
+		await opened.wiring.onSettingsChanged(["catalog.acme"], "alice");
 		expect(opened.double.launches).toHaveLength(1);
 		expect(names(opened.double.userTools.get("alice"))).toContain("acme/echo");
+	} finally {
+		await opened.close();
+	}
+});
+
+test("a dotted disable write retires an idle service and unpublishes its tools", async () => {
+	const opened = await openCatalog({ acme: user() });
+	try {
+		await opened.wiring.conversationCreated(event(opened, "alice"));
+		expect(names(opened.double.userTools.get("alice"))).toContain("acme/echo");
+		opened.double.setSettings("alice", { catalog: { acme: false } });
+		await opened.wiring.onSettingsChanged(["catalog.acme"], "alice");
+		expect(names(opened.double.userTools.get("alice"))).toEqual([]);
+		expect(opened.double.launches[0]?.releases).toBe(1);
 	} finally {
 		await opened.close();
 	}
@@ -246,7 +321,7 @@ test("disable finishes an in-flight call then unpublishes and releases the servi
 		const tools = opened.double.userTools.get("alice")!;
 		const pending = tool(tools, "acme/hang").execute({}, api("alice-run"), CONTEXT);
 		opened.double.setSettings("alice", { catalog: { acme: false } });
-		await opened.wiring.onSettingsChanged(["catalog"], "alice");
+		await opened.wiring.onSettingsChanged(["catalog.acme"], "alice");
 		expect(names(opened.double.userTools.get("alice"))).toEqual([]);
 		expect(opened.double.launches[0]?.releases).toBe(0);
 		await expect(pending).resolves.toMatchObject({ isError: false });
@@ -290,10 +365,19 @@ test("the user settings section declares catalog toggles", async () => {
 			root: {
 				children: [
 					expect.objectContaining({ name: "catalog.acme", default: false }),
-					expect.objectContaining({ name: "catalog.shared", default: true }),
+					expect.objectContaining({
+						name: "catalog.shared",
+						default: true,
+						help: expect.stringContaining("Synthetic shared test authority"),
+					}),
 				],
 			},
 		});
+		const sharedToggle = (definition.form.root.children as { help?: string }[])
+			.find((child) => child.help !== undefined);
+		expect(sharedToggle?.help).toContain(
+			"Shared MCP servers hand every permitted user's agent the admin's credential for that service.",
+		);
 	} finally {
 		await opened.close();
 	}

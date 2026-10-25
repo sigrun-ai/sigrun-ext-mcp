@@ -170,13 +170,15 @@ export function createUserCatalog(host, servers) {
                     if (!(await catalogEnabled(host, user, name, server)))
                         return undefined;
                     // Per-user tokens use only scoped secrets; the file store remains
-                    // exclusively the shared operator's credential path.
+                    // exclusively the shared operator's credential path. A configured
+                    // token is shared configuration and must never become the fallback.
+                    const env = Object.fromEntries(Object.entries(server.env ?? {}).filter(([key]) => key !== "MCP_ACCESS_TOKEN"));
                     const token = await host.stores.user(user).secrets.get(`token:${name}`);
                     return {
                         command: server.command,
                         args: [...server.args],
                         env: {
-                            ...server.env,
+                            ...env,
                             ...(token === undefined ? {} : { MCP_ACCESS_TOKEN: token }),
                         },
                     };
@@ -194,11 +196,14 @@ export function createUserCatalog(host, servers) {
                 throw cause;
             }
         }
+        // Header names are case-insensitive; remove every configured spelling
+        // so one user's missing token cannot fall back to another credential.
+        const headers = Object.fromEntries(Object.entries(server.headers ?? {}).filter(([key]) => key.toLowerCase() !== "authorization"));
         const token = await host.stores.user(user).secrets.get(`token:${name}`);
         return await connectMcpServer(name, {
             ...server,
             headers: {
-                ...server.headers,
+                ...headers,
                 ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }),
             },
         });
@@ -282,6 +287,11 @@ export function createUserCatalog(host, servers) {
                             name: `catalog.${name}`,
                             label: name,
                             default: server.availability !== "opt-in",
+                            ...(server.credentials === "shared"
+                                ? {
+                                    help: `${server.sharedAuthority} Shared MCP servers hand every permitted user's agent the admin's credential for that service.`,
+                                }
+                                : {}),
                         })),
                     },
                 },

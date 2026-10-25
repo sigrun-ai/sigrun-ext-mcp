@@ -181,7 +181,10 @@ export function createMcpExtension(host) {
         conversationCreated: activate,
         runSettled: activate,
         onSettingsChanged: async (keys, user) => {
-            if (user !== undefined && keys.includes("catalog")) {
+            // Settings surfaces publish dotted field paths; accepting the parent
+            // key also covers whole-object writes through the raw settings API.
+            if (user !== undefined &&
+                keys.some((key) => key === "catalog" || key.startsWith("catalog."))) {
                 await catalog.activate(user);
             }
             // The host has no settings-read hook. A visit that changes nothing

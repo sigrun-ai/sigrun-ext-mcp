@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- **Upgrade behavior:** catalog servers now default to `credentials: "user"`.
+  Existing installs that rely on one system-wide server must explicitly
+  select `credentials: "shared"` and provide `sharedAuthority`. Shared MCP
+  servers hand every permitted user's agent the admin's credential for that
+  service.
+
 ### Fixed
 - Prompt sections resolve the conversation owner through the harness's
   committed-read surface instead of the server-bound identity bridge, so
