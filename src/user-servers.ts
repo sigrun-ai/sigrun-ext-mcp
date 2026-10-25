@@ -314,10 +314,22 @@ function userServersFromSettings(
 	settings: Record<string, unknown>,
 ): Readonly<Record<string, McpServerConfig>> {
 	if (settings.servers === undefined) return {};
+	let value: unknown = settings.servers;
+	if (typeof value === "string") {
+		// Extension-scope longtext saves preserve strings, unlike the core
+		// settings adapter's JSON parsing, so both persisted shapes are valid.
+		try {
+			value = JSON.parse(value) as unknown;
+		} catch (cause) {
+			throw new Error(
+				`mcp config user settings servers is not valid JSON: ${errorMessage(cause)}`,
+			);
+		}
+	}
 	// Reuse the wire validator so a user cannot supply fields or transports
 	// that the operator registry would reject under a different code path.
 	return parseMcpConfig(
-		JSON.stringify({ servers: settings.servers }),
+		JSON.stringify({ servers: value }),
 		"user settings servers",
 	).servers;
 }
@@ -533,10 +545,12 @@ export function createUserCatalog(
 				mode: "submit",
 				onSubmit: "save",
 				children: [{
-					type: "textarea",
+					type: "longtext",
 					name: "servers",
 					label: "MCP server definitions",
-					default: {},
+					default: "{}",
+					syntax: "code",
+					lang: "json",
 					help: "Define MCP servers as a JSON object. Remote servers use url; stdio availability depends on the operator's userServers policy.",
 				}],
 			},

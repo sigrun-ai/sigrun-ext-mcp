@@ -90,8 +90,13 @@ a user server name may not start with `u_`. Its tools publish only to that
 user as `u_<server>/<tool>`. `"remote"` permits URL servers and ignores stdio;
 `"all"` permits URL servers too. A live policy change reconciles every active
 user, retiring disallowed connections and removing their tools without a
-restart. A catalog server literally named `servers` is rejected because it
-would shadow this settings namespace.
+restart. Lifecycle events re-read the policy from `mcp.json`, since this
+operator file is not part of core's settings document. The contributed
+settings sections are selected at extension load: changing `none` to an
+enabled policy needs a restart to add the editor, and changing to `none`
+needs a restart to remove it; connection gating itself takes effect at the
+next lifecycle event. A catalog server literally named `servers` is rejected
+because it would shadow this settings namespace.
 
 **Named limitation — `all` and user-supplied stdio:** sigrun declares per-user
 services statically at load and passes no server name to `UserService.start`.

@@ -160,9 +160,20 @@ export function userServerAllowed(kind, mode) {
 function userServersFromSettings(settings) {
     if (settings.servers === undefined)
         return {};
+    let value = settings.servers;
+    if (typeof value === "string") {
+        // Extension-scope longtext saves preserve strings, unlike the core
+        // settings adapter's JSON parsing, so both persisted shapes are valid.
+        try {
+            value = JSON.parse(value);
+        }
+        catch (cause) {
+            throw new Error(`mcp config user settings servers is not valid JSON: ${errorMessage(cause)}`);
+        }
+    }
     // Reuse the wire validator so a user cannot supply fields or transports
     // that the operator registry would reject under a different code path.
-    return parseMcpConfig(JSON.stringify({ servers: settings.servers }), "user settings servers").servers;
+    return parseMcpConfig(JSON.stringify({ servers: value }), "user settings servers").servers;
 }
 function sharedAuthorityHelp(reason) {
     const authority = reason?.trim() ?? "Shared authority was not stated.";
@@ -351,10 +362,12 @@ export function createUserCatalog(host, servers, initialMode = "none") {
                     mode: "submit",
                     onSubmit: "save",
                     children: [{
-                            type: "textarea",
+                            type: "longtext",
                             name: "servers",
                             label: "MCP server definitions",
-                            default: {},
+                            default: "{}",
+                            syntax: "code",
+                            lang: "json",
                             help: "Define MCP servers as a JSON object. Remote servers use url; stdio availability depends on the operator's userServers policy.",
                         }],
                 },

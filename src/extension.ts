@@ -127,6 +127,23 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 	const catalog = createUserCatalog(host, config.servers, config.userServers ?? "none");
 	const oauthFlows = createUserOauthFlows();
 	let closed = false;
+	let liveUserServers = config.userServers ?? "none";
+	let policyRefresh: Promise<void> = Promise.resolve();
+	const refreshPolicy = (): Promise<void> => {
+		// Lifecycle events are the production file-change signal: mcp.json is
+		// operator configuration, not part of core's settings document.
+		const next = loadMcpConfig({
+			...process.env,
+			[MCP_CONFIG_ENV]: configPath,
+		}).userServers ?? "none";
+		if (next === liveUserServers) return policyRefresh;
+		liveUserServers = next;
+		policyRefresh = policyRefresh.then(
+			() => catalog.reconcileAll(next),
+			() => catalog.reconcileAll(next),
+		);
+		return policyRefresh;
+	};
 
 	const pending: Promise<void>[] = [];
 	for (const [name, server] of shared) {
@@ -170,6 +187,7 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 	}
 
 	const activate = async (event: OwnerEvent): Promise<void> => {
+		await refreshPolicy();
 		if (event.owner !== undefined) await catalog.activate(event.owner);
 	};
 
@@ -377,10 +395,7 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 			if (keys.includes("userServers")) {
 				// Server scope has no user argument: every active user must lose
 				// newly disallowed tools, not just the user who wrote settings.
-				await catalog.reconcileAll(loadMcpConfig({
-					...process.env,
-					[MCP_CONFIG_ENV]: configPath,
-				}).userServers ?? "none");
+				await refreshPolicy();
 				return;
 			}
 			if (
