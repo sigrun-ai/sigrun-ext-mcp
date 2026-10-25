@@ -14,7 +14,7 @@
 import { expect, test } from "vitest";
 import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool } from "@earendil-works/pi-durable";
+import { defineDoc, defineTool } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	cleanupDir,
@@ -30,6 +30,14 @@ import {
 } from "../src/section.js";
 
 const STUB_SERVER = join(import.meta.dirname, "stub-mcp-server.mjs");
+const SessionMetaDoc = defineDoc<{ owner?: string }>({
+	kind: "sigrun.session-meta",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "current",
+	initial: () => ({}),
+});
 
 /** A minimal model-offered stand-in for a discovery tool (codemode /
  * tool_search): the section gates on tool NAMES in `agent.tools`. */
@@ -50,6 +58,10 @@ async function renderSection(
 	harness: import("@earendil-works/pi-durable").Harness,
 ): Promise<string | undefined> {
 	const root = await harness.root(BACKGROUND_CONTEXT, {});
+	await root.commit(async (tx) => {
+		const meta = await tx.doc(SessionMetaDoc, root.id);
+		meta.owner = "alice";
+	}, BACKGROUND_CONTEXT);
 	const agent = await root.agent(BACKGROUND_CONTEXT);
 	const section = agent.sections.find((s) => s.key === MCP_SERVERS_SECTION_KEY);
 	if (section === undefined) return undefined;
@@ -60,8 +72,7 @@ async function renderSection(
 				agent,
 				env: undefined,
 				shown: {},
-				// `read` is unused by our render; satisfy the type loosely.
-				read: undefined as never,
+				read: harness,
 			},
 			BACKGROUND_CONTEXT,
 		),

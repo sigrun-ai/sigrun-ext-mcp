@@ -1,11 +1,21 @@
 /** Catalog wiring: shared operator services remain system children, while
  * per-user entries connect and publish through the structural sigrun host. */
-import { defineExtension } from "@earendil-works/pi-durable";
+import { defineDoc, defineExtension } from "@earendil-works/pi-durable";
 import { connectMcpServer } from "./client.js";
 import { loadMcpConfig, serverEnabled, } from "./config.js";
 import { MCP_SERVERS_SECTION_KEY, partitionForSection, renderMcpServersSection, } from "./section.js";
-import { createUserCatalog, sharedServerAllowed, discoverMcpTools, } from "./user-servers.js";
+import { catalogEnabledFromSettings, createUserCatalog, sharedServerAllowed, discoverMcpTools, } from "./user-servers.js";
 export const MCP_EXTENSION_NAME = "sigrun.mcp";
+/** Standalone tokens need no registry install; the kind/version must match
+ * core's session-meta document so its committed owner is readable here. */
+const SessionOwnerDoc = defineDoc({
+    kind: "sigrun.session-meta",
+    version: 1,
+    scope: "conversation",
+    history: "latest",
+    fork: "current",
+    initial: () => ({}),
+});
 function denied(message) {
     return {
         output: [{ type: "text", text: message }],
@@ -102,12 +112,27 @@ export function createMcpExtension(host) {
         catalog.close();
     };
     process.on("exit", closeSystemClients);
-    const mcpServersSection = async (input) => {
-        const user = await host.identity.actingUser(input.conversationId);
+    const mcpServersSection = async (input, context) => {
+        let user;
+        let settings;
+        try {
+            // PromptInput.read uses only committed harness state. The host identity
+            // bridge is server-bound and may never resolve in harness-only boots.
+            user = (await input.read.snapshot(SessionOwnerDoc, input.conversationId, context))?.owner;
+            if (user !== undefined) {
+                settings = await host.stores.user(user).settings.get();
+            }
+        }
+        catch (cause) {
+            console.warn(`mcp section access read failed: ${errorMessage(cause)}`);
+            return undefined;
+        }
         const reachable = new Map();
         for (const [name, server] of shared) {
             if (user !== undefined &&
-                (await sharedServerAllowed(host, input.conversationId, name, server))) {
+                settings !== undefined &&
+                (server.users === undefined || server.users.includes(user)) &&
+                catalogEnabledFromSettings(name, server, settings)) {
                 const exposure = serverExposures.get(name);
                 if (exposure !== undefined)
                     reachable.set(name, exposure);

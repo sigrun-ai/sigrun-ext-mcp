@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { expect, test } from "vitest";
-import type { ConversationId, ToolRegistration } from "@earendil-works/pi-durable";
+import { defineDoc, type ConversationId, type ToolRegistration } from "@earendil-works/pi-durable";
 import { createMcpExtension } from "../src/extension.js";
 import { MCP_CONFIG_ENV } from "../src/config.js";
 import { createCatalogHost, type CatalogHostDouble } from "./catalog-host.js";
@@ -10,6 +10,14 @@ import { cleanupDir, stubConfigPath, tempDir, writeConfig } from "./harness.js";
 const STUB_SERVER = join(import.meta.dirname, "stub-mcp-server.mjs");
 const HANG_SERVER = join(import.meta.dirname, "stub-hang-server.mjs");
 const CONTEXT = BACKGROUND_CONTEXT;
+const SessionMetaDoc = defineDoc<{ owner?: string }>({
+	kind: "sigrun.session-meta",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "current",
+	initial: () => ({}),
+});
 
 interface OpenedCatalog {
 	readonly wiring: ReturnType<typeof createMcpExtension>;
@@ -105,12 +113,38 @@ async function section(
 				},
 				env: undefined,
 				shown: {},
-				read: undefined,
+				read: {
+					snapshot: async (
+						token: unknown,
+						id: ConversationId,
+					) => id === conversationId &&
+						(token as { definition?: { kind?: string } }).definition?.kind === SessionMetaDoc.definition.kind
+						? { owner: opened.double.actingUsers.get(id) }
+						: undefined,
+				},
 			} as never,
 			CONTEXT,
 		),
 	);
 }
+
+test("section render never waits for an unbound host identity bridge", async () => {
+	const opened = await openCatalog({ acme: shared() });
+	try {
+		await opened.wiring.ready;
+		const alice = event(opened, "alice");
+		opened.double.host.identity.actingUser = () => new Promise<string>(() => {});
+		const rendered = section(opened, alice.id);
+		await expect(
+			Promise.race([
+				rendered,
+				new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 250)),
+			]),
+		).resolves.toContain("- acme:");
+	} finally {
+		await opened.close();
+	}
+});
 
 test("catalog servers are lazy and each user gets a process with their own token", async () => {
 	const opened = await openCatalog({ acme: user() });

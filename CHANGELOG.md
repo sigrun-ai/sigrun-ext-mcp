@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed
+- Prompt sections resolve the conversation owner through the harness's
+  committed-read surface instead of the server-bound identity bridge, so
+  harness-only boots cannot hang while preparing a request.
+
 ### Added
 - MCP catalog entries default to per-user credentials, with lazy per-user
   stdio services, scoped token injection, remote connections, and tools
