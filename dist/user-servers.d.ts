@@ -3,7 +3,7 @@
  * remains independently buildable and installable. */
 import { type ConversationId, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type McpClient, type McpServiceHandle } from "./client.js";
-import { type McpServerConfig } from "./config.js";
+import { type McpServerConfig, type UserServersMode } from "./config.js";
 export interface HandlerContext {
     readonly abortSignal: AbortSignal | undefined;
 }
@@ -86,6 +86,8 @@ export interface UserCatalog {
     activate(user: string, ctx?: HandlerContext): Promise<void>;
     retire(user: string, server: string): Promise<void>;
     exposures(user: string): ReadonlyMap<string, ServerExposure>;
+    reconcileAll(mode?: UserServersMode): Promise<void>;
     close(): void;
 }
-export declare function createUserCatalog(host: SigrunHost, servers: Readonly<Record<string, McpServerConfig>>): UserCatalog;
+export declare function userServerAllowed(kind: "url" | "stdio", mode: UserServersMode): boolean;
+export declare function createUserCatalog(host: SigrunHost, servers: Readonly<Record<string, McpServerConfig>>, initialMode?: UserServersMode): UserCatalog;

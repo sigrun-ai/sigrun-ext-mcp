@@ -84,6 +84,22 @@ the next activation and reads the new token immediately.
 catalog's `credentials` and `availability` fields above. Catalog names
 starting `u_` are reserved for those user-supplied servers and rejected.
 
+When enabled, the **Your MCP servers** settings section accepts a JSON object
+under the `servers` key. Entries use the same validation rules as `mcp.json`;
+a user server name may not start with `u_`. Its tools publish only to that
+user as `u_<server>/<tool>`. `"remote"` permits URL servers and ignores stdio;
+`"all"` permits URL servers too. A live policy change reconciles every active
+user, retiring disallowed connections and removing their tools without a
+restart. A catalog server literally named `servers` is rejected because it
+would shadow this settings namespace.
+
+**Named limitation — `all` and user-supplied stdio:** sigrun declares per-user
+services statically at load and passes no server name to `UserService.start`.
+Consequently a dynamic, named user-supplied stdio service cannot be launched.
+Under `"all"`, such an entry is reported as a configuration error naming the
+server; its command is never spawned in sigrun's process, and no tools are
+published. `"all"` does **not** make user-supplied stdio functional.
+
 ## Exposure: how tools reach callers
 
 On pi-durable 1.2.0 semantics, `"exposure"` decides who can call a server's

@@ -16,9 +16,11 @@ import {
 } from "./client.js";
 import {
 	isStdioServer,
+	parseMcpConfig,
 	resolveToolExposure,
 	serverEnabled,
 	type McpServerConfig,
+	type UserServersMode,
 } from "./config.js";
 import type {
 	McpContentBlock,
@@ -294,10 +296,30 @@ export interface UserCatalog {
 	activate(user: string, ctx?: HandlerContext): Promise<void>;
 	retire(user: string, server: string): Promise<void>;
 	exposures(user: string): ReadonlyMap<string, ServerExposure>;
+	reconcileAll(mode?: UserServersMode): Promise<void>;
 	close(): void;
 }
 function errorMessage(cause: unknown): string {
 	return cause instanceof Error ? cause.message : String(cause);
+}
+
+export function userServerAllowed(
+	kind: "url" | "stdio",
+	mode: UserServersMode,
+): boolean {
+	return kind === "url" ? mode !== "none" : mode === "all";
+}
+
+function userServersFromSettings(
+	settings: Record<string, unknown>,
+): Readonly<Record<string, McpServerConfig>> {
+	if (settings.servers === undefined) return {};
+	// Reuse the wire validator so a user cannot supply fields or transports
+	// that the operator registry would reject under a different code path.
+	return parseMcpConfig(
+		JSON.stringify({ servers: settings.servers }),
+		"user settings servers",
+	).servers;
 }
 
 function sharedAuthorityHelp(reason: string | undefined): string {
@@ -309,7 +331,9 @@ function sharedAuthorityHelp(reason: string | undefined): string {
 export function createUserCatalog(
 	host: SigrunHost,
 	servers: Readonly<Record<string, McpServerConfig>>,
+	initialMode: UserServersMode = "none",
 ): UserCatalog {
+	let mode = initialMode;
 	const states = new Map<string, UserCatalogState>();
 	const personal = Object.entries(servers).filter(
 		([, server]) => server.credentials !== "shared" && serverEnabled(server),
@@ -375,23 +399,50 @@ export function createUserCatalog(
 	const publish = (user: string, state: UserCatalogState) => {
 		host.tools.setUserTools(
 			user,
-			personal.flatMap(([name]) => state.connections.get(name)?.registrations ?? []),
+			[...state.connections.values()].flatMap((connection) => connection.registrations),
 		);
 	};
 
 	const refresh = async (user: string, ctx: HandlerContext): Promise<void> => {
 		const state = states.get(user);
 		if (state === undefined || closed) return;
+		let configured: Readonly<Record<string, McpServerConfig>> = {};
 		const settings = await host.stores.user(user).settings.get();
+		try {
+			configured = userServersFromSettings(settings);
+		} catch (cause) {
+			console.warn(`mcp user "${user}" settings quarantined: ${errorMessage(cause)}`);
+		}
+		const activePersonal = personal.flatMap(([name, server]) => {
+			try {
+				return catalogEnabledFromSettings(name, server, settings) ? [[name, server] as const] : [];
+			} catch (cause) {
+				console.warn(`mcp server "${name}" settings quarantined for user "${user}": ${errorMessage(cause)}`);
+				return [];
+			}
+		});
+		const activeSupplied = Object.entries(configured).filter(([name, server]) => {
+			if (!userServerAllowed(isStdioServer(server) ? "stdio" : "url", mode)) return false;
+			if (!isStdioServer(server)) return true;
+			// Dynamic user services cannot be represented by the static host
+			// contract; never run the user's command in sigrun's own process.
+			console.warn(
+				`mcp server "${name}" for user "${user}" is a config error: the host declares per-user services statically at load and passes no server name to start, so a dynamic per-user stdio service cannot be launched`,
+			);
+			return false;
+		});
+		const active = new Map([
+			...activePersonal,
+			...activeSupplied.map(([name, server]) => [`u_${name}`, { ...server, credentials: "user" } as McpServerConfig] as const),
+		]);
+		for (const [name, connection] of state.connections) {
+			if (active.has(name)) continue;
+			state.connections.delete(name);
+			connection.retire();
+		}
 		await Promise.all(
-			personal.map(async ([name, server]) => {
-				const enabled = catalogEnabledFromSettings(name, server, settings);
+			[...active].map(async ([name, server]) => {
 				const existing = state.connections.get(name);
-				if (!enabled) {
-					state.connections.delete(name);
-					existing?.retire();
-					return;
-				}
 				if (existing !== undefined) {
 					existing.revive();
 					return;
@@ -425,6 +476,11 @@ export function createUserCatalog(
 			}),
 		);
 		if (!closed) publish(user, state);
+	};
+
+	const reconcileAll = async (nextMode?: UserServersMode): Promise<void> => {
+		if (nextMode !== undefined) mode = nextMode;
+		await Promise.all([...states.keys()].map((user) => activate(user)));
 	};
 
 	const activate = (user: string, ctx: HandlerContext = { abortSignal: undefined }) => {
@@ -464,35 +520,54 @@ export function createUserCatalog(
 	};
 
 	const enabledServers = Object.entries(servers).filter(([, server]) => serverEnabled(server));
-	const settings: readonly CatalogSettingsSection[] =
-		enabledServers.length === 0
-			? []
-			: [{
-				id: "catalog",
-				title: "MCP servers",
-				scope: "user",
-				form: {
-					v: 1,
-					root: {
-						type: "form",
-						id: "mcp-catalog-form",
-						bind: "/settings",
-						mode: "submit",
-						onSubmit: "save",
-						children: enabledServers.map(([name, server]) => ({
-							type: "toggle",
-							name,
-							label: name,
-							default: server.availability !== "opt-in",
-							...(server.credentials === "shared"
-								? {
-									help: sharedAuthorityHelp(server.sharedAuthority),
-								}
-								: {}),
-						})),
-					},
+	const settings: CatalogSettingsSection[] = mode === "none" ? [] : [{
+		id: "user-servers",
+		title: "Your MCP servers",
+		scope: "user",
+		form: {
+			v: 1,
+			root: {
+				type: "form",
+				id: "mcp-user-servers-form",
+				bind: "/settings",
+				mode: "submit",
+				onSubmit: "save",
+				children: [{
+					type: "textarea",
+					name: "servers",
+					label: "MCP server definitions",
+					default: {},
+					help: "Define MCP servers as a JSON object. Remote servers use url; stdio availability depends on the operator's userServers policy.",
+				}],
+			},
+		},
+	}];
+	if (enabledServers.length > 0) {
+		settings.push({
+			id: "catalog",
+			title: "MCP servers",
+			scope: "user",
+			form: {
+				v: 1,
+				root: {
+					type: "form",
+					id: "mcp-catalog-form",
+					bind: "/settings",
+					mode: "submit",
+					onSubmit: "save",
+					children: enabledServers.map(([name, server]) => ({
+						type: "toggle",
+						name,
+						label: name,
+						default: server.availability !== "opt-in",
+						...(server.credentials === "shared"
+							? { help: sharedAuthorityHelp(server.sharedAuthority) }
+							: {}),
+					})),
 				},
-			}];
+			},
+		});
+	}
 
 	return {
 		perUserTools: personal.length > 0,
@@ -500,11 +575,11 @@ export function createUserCatalog(
 		settings,
 		activate,
 		retire,
+		reconcileAll,
 		exposures: (user) => new Map(
-			personal.flatMap(([name]) => {
-				const exposure = states.get(user)?.connections.get(name)?.exposure;
-				return exposure === undefined ? [] : [[name, exposure]];
-			}),
+			[...(states.get(user)?.connections ?? [])].flatMap(([name, connection]) =>
+				connection.exposure === undefined ? [] : [[name, connection.exposure]],
+			),
 		),
 		close: () => {
 			if (closed) return;

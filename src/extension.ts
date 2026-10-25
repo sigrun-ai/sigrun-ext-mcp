@@ -6,6 +6,8 @@ import type { PromptInput } from "@earendil-works/pi-durable";
 import { connectMcpServer, type McpClient } from "./client.js";
 import {
 	loadMcpConfig,
+	MCP_CONFIG_ENV,
+	resolveMcpConfigPath,
 	serverEnabled,
 	type McpOAuthConfig,
 	type McpStdioServerConfig,
@@ -112,6 +114,9 @@ function errorMessage(cause: unknown): string {
 // length is greater than zero. An optional/defaulted parameter has length 0
 // and would silently receive no host, disabling every per-user operation.
 export function createMcpExtension(host: SigrunHost): McpWiring {
+	// Pin the boot-selected path so policy reloads survive callers restoring
+	// their process environment immediately after the factory returns.
+	const configPath = resolveMcpConfigPath();
 	const config = loadMcpConfig();
 	const tools: ToolRegistration[] = [];
 	const clients = new Map<string, McpClient>();
@@ -119,7 +124,7 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 	const shared = Object.entries(config.servers).filter(
 		([, server]) => server.credentials === "shared" && serverEnabled(server),
 	);
-	const catalog = createUserCatalog(host, config.servers);
+	const catalog = createUserCatalog(host, config.servers, config.userServers ?? "none");
 	const oauthFlows = createUserOauthFlows();
 	let closed = false;
 
@@ -369,11 +374,18 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 		conversationCreated: activate,
 		runSettled: activate,
 		onSettingsChanged: async (keys, user) => {
-			// Core persists and reports flat form-field names. Only configured
-			// server names trigger reconciliation; unrelated settings stay inert.
+			if (keys.includes("userServers")) {
+				// Server scope has no user argument: every active user must lose
+				// newly disallowed tools, not just the user who wrote settings.
+				await catalog.reconcileAll(loadMcpConfig({
+					...process.env,
+					[MCP_CONFIG_ENV]: configPath,
+				}).userServers ?? "none");
+				return;
+			}
 			if (
 				user !== undefined &&
-				keys.some((key) => Object.hasOwn(config.servers, key))
+				(keys.includes("servers") || keys.some((key) => Object.hasOwn(config.servers, key)))
 			) {
 				await catalog.activate(user);
 			}

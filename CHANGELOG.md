@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   harness-only boots cannot hang while preparing a request.
 
 ### Added
+- User-supplied MCP servers in per-user settings, gated by `userServers:
+  "none" | "remote" | "all"` and validated with the operator config parser.
+  Tools publish as `u_<server>/<tool>`; live policy changes reconcile every
+  active user. The `all` mode also permits URL servers, but reports
+  user-supplied stdio as a named configuration error because the host's
+  static user-service contract cannot launch it safely.
 - Per-user OAuth start/complete extension routes with ten-minute in-memory
   PKCE state scoped by user and server. Completion stores the raw access
   token in the caller's scoped secrets; the CLI refuses per-user servers.

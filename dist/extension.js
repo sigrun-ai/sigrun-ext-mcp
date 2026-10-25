@@ -2,7 +2,7 @@
  * per-user entries connect and publish through the structural sigrun host. */
 import { defineDoc, defineExtension } from "@earendil-works/pi-durable";
 import { connectMcpServer } from "./client.js";
-import { loadMcpConfig, serverEnabled, } from "./config.js";
+import { loadMcpConfig, MCP_CONFIG_ENV, resolveMcpConfigPath, serverEnabled, } from "./config.js";
 import { createUserOauthFlows, exchangeCode, extractCode, } from "./oauth.js";
 import { storeUserMcpToken } from "./tokens.js";
 import { MCP_SERVERS_SECTION_KEY, partitionForSection, renderMcpServersSection, } from "./section.js";
@@ -49,12 +49,15 @@ function errorMessage(cause) {
 // length is greater than zero. An optional/defaulted parameter has length 0
 // and would silently receive no host, disabling every per-user operation.
 export function createMcpExtension(host) {
+    // Pin the boot-selected path so policy reloads survive callers restoring
+    // their process environment immediately after the factory returns.
+    const configPath = resolveMcpConfigPath();
     const config = loadMcpConfig();
     const tools = [];
     const clients = new Map();
     const serverExposures = new Map();
     const shared = Object.entries(config.servers).filter(([, server]) => server.credentials === "shared" && serverEnabled(server));
-    const catalog = createUserCatalog(host, config.servers);
+    const catalog = createUserCatalog(host, config.servers, config.userServers ?? "none");
     const oauthFlows = createUserOauthFlows();
     let closed = false;
     const pending = [];
@@ -285,10 +288,17 @@ export function createMcpExtension(host) {
         conversationCreated: activate,
         runSettled: activate,
         onSettingsChanged: async (keys, user) => {
-            // Core persists and reports flat form-field names. Only configured
-            // server names trigger reconciliation; unrelated settings stay inert.
+            if (keys.includes("userServers")) {
+                // Server scope has no user argument: every active user must lose
+                // newly disallowed tools, not just the user who wrote settings.
+                await catalog.reconcileAll(loadMcpConfig({
+                    ...process.env,
+                    [MCP_CONFIG_ENV]: configPath,
+                }).userServers ?? "none");
+                return;
+            }
             if (user !== undefined &&
-                keys.some((key) => Object.hasOwn(config.servers, key))) {
+                (keys.includes("servers") || keys.some((key) => Object.hasOwn(config.servers, key)))) {
                 await catalog.activate(user);
             }
             // The host has no settings-read hook. A visit that changes nothing

@@ -97,9 +97,11 @@ export interface McpOAuthConfig {
     /** PKCE method (optional; only "S256" is implemented — and always used). */
     readonly codeChallengeMethod?: string;
 }
+export type UserServersMode = "none" | "remote" | "all";
 /** The parsed `mcp.json` body. */
 export interface McpConfig {
     readonly servers: Readonly<Record<string, McpServerConfig>>;
+    readonly userServers?: UserServersMode;
 }
 /** The env override the config store reads. */
 export declare const MCP_CONFIG_ENV = "SIGRUN_MCP_CONFIG";

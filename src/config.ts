@@ -180,9 +180,12 @@ export interface McpOAuthConfig {
 	readonly codeChallengeMethod?: string;
 }
 
+export type UserServersMode = "none" | "remote" | "all";
+
 /** The parsed `mcp.json` body. */
 export interface McpConfig {
 	readonly servers: Readonly<Record<string, McpServerConfig>>;
+	readonly userServers?: UserServersMode;
 }
 
 /** The env override the config store reads. */
@@ -232,6 +235,12 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 	if (!isRecord(parsed)) {
 		throw new Error(`mcp config ${source} must be a JSON object`);
 	}
+	const userServers = parsed.userServers ?? "none";
+	if (userServers !== "none" && userServers !== "remote" && userServers !== "all") {
+		throw new Error(
+			`mcp config ${source}: userServers must be one of "none", "remote", "all"`,
+		);
+	}
 	const servers: Record<string, McpServerConfig> = {};
 	const rawServers = parsed.servers;
 	if (!isRecord(rawServers)) {
@@ -240,6 +249,11 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 		);
 	}
 	for (const [name, entry] of Object.entries(rawServers)) {
+		if (name === "servers") {
+			throw new Error(
+				`mcp config ${source}: server "servers" uses the reserved user settings namespace`,
+			);
+		}
 		if (name.startsWith("u_")) {
 			throw new Error(
 				`mcp config ${source}: server "${name}" uses the reserved "u_" prefix`,
@@ -435,7 +449,7 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 					...catalog,
 				};
 	}
-	return { servers };
+	return { servers, userServers };
 }
 
 /** Parse one server's oauth block. Fail-loud on a wrong shape: a

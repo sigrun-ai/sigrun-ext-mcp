@@ -128,12 +128,19 @@ export function parseMcpConfig(text, source) {
     if (!isRecord(parsed)) {
         throw new Error(`mcp config ${source} must be a JSON object`);
     }
+    const userServers = parsed.userServers ?? "none";
+    if (userServers !== "none" && userServers !== "remote" && userServers !== "all") {
+        throw new Error(`mcp config ${source}: userServers must be one of "none", "remote", "all"`);
+    }
     const servers = {};
     const rawServers = parsed.servers;
     if (!isRecord(rawServers)) {
         throw new Error(`mcp config ${source} must have a "servers" object mapping names to server entries`);
     }
     for (const [name, entry] of Object.entries(rawServers)) {
+        if (name === "servers") {
+            throw new Error(`mcp config ${source}: server "servers" uses the reserved user settings namespace`);
+        }
         if (name.startsWith("u_")) {
             throw new Error(`mcp config ${source}: server "${name}" uses the reserved "u_" prefix`);
         }
@@ -272,7 +279,7 @@ export function parseMcpConfig(text, source) {
                 ...catalog,
             };
     }
-    return { servers };
+    return { servers, userServers };
 }
 /** Parse one server's oauth block. Fail-loud on a wrong shape: a
  * half-configured block is a config error, not a silently-ignored field. */
