@@ -11,7 +11,7 @@ import {
 } from "../src/user-servers.js";
 import { createCatalogHost } from "./catalog-host.js";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { validateTree } from "./core-validator.js";
+import { validateTree } from "@sigrun/sigrun/blocks";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -84,6 +84,7 @@ describe("user-supplied MCP server lifecycle", () => {
 		const double = createCatalogHost();
 		cleanups.push(() => double.close());
 		const wiring = createMcpExtension(double.host);
+		cleanups.push(() => wiring.close());
 		expect(process.listenerCount("exit")).toBe(before + 1);
 		await wiring.close();
 		expect(process.listenerCount("exit")).toBe(before);
@@ -162,6 +163,18 @@ describe("user-supplied MCP server lifecycle", () => {
 		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
 	});
 
+	it("treats an untouched or cleared longtext editor as no user servers", async () => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const double = createCatalogHost();
+		cleanups.push(() => double.close());
+		double.setSettings("alice", settings("  \n"));
+		const catalog = createUserCatalog(double.host, {}, "remote");
+		cleanups.push(() => catalog.close());
+		await catalog.activate("alice");
+		expect(double.userTools.get("alice")).toEqual([]);
+		expect(warning).not.toHaveBeenCalled();
+	});
+
 	it("reports malformed longtext JSON as that user's settings error", async () => {
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		const double = createCatalogHost();
@@ -228,5 +241,32 @@ describe("user-supplied MCP server lifecycle", () => {
 		);
 		expect(result).toMatchObject({ isError: true });
 		expect(remote.connections()).toBe(before);
+	});
+
+	it("keeps activation working when a policy read is malformed", async () => {
+		const remote = await fakeMcpServer();
+		cleanups.push(remote.close);
+		const dir = await mkdtemp(join(tmpdir(), "acme-policy-error-"));
+		cleanups.push(() => rm(dir, { recursive: true, force: true }));
+		const path = join(dir, "mcp.json");
+		await writeFile(path, JSON.stringify({ servers: {}, userServers: "remote" }));
+		const double = createCatalogHost();
+		cleanups.push(() => double.close());
+		double.setSettings("alice", settings({ acme: { url: remote.url } }));
+		const prior = process.env.SIGRUN_MCP_CONFIG;
+		process.env.SIGRUN_MCP_CONFIG = path;
+		let wiring: ReturnType<typeof createMcpExtension>;
+		try {
+			wiring = createMcpExtension(double.host);
+		} finally {
+			if (prior === undefined) delete process.env.SIGRUN_MCP_CONFIG;
+			else process.env.SIGRUN_MCP_CONFIG = prior;
+		}
+		cleanups.push(() => wiring.close());
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		await writeFile(path, "{malformed");
+		await wiring.runSettled({ conversationId: ROOT_CONVERSATION_ID, owner: "alice" });
+		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
+		expect(warning).toHaveBeenCalledWith(expect.stringContaining(path));
 	});
 });

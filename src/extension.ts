@@ -129,20 +129,38 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 	let closed = false;
 	let liveUserServers = config.userServers ?? "none";
 	let policyRefresh: Promise<void> = Promise.resolve();
-	const refreshPolicy = (): Promise<void> => {
+	let policyErrorReported = false;
+	const refreshPolicy = async (): Promise<void> => {
 		// Lifecycle events are the production file-change signal: mcp.json is
 		// operator configuration, not part of core's settings document.
-		const next = loadMcpConfig({
-			...process.env,
-			[MCP_CONFIG_ENV]: configPath,
-		}).userServers ?? "none";
+		let next = liveUserServers;
+		try {
+			next = loadMcpConfig({
+				...process.env,
+				[MCP_CONFIG_ENV]: configPath,
+			}).userServers ?? "none";
+			policyErrorReported = false;
+		} catch (cause) {
+			// A transient operator edit must not suppress this event's user
+			// reconciliation or discard the last known-good policy.
+			if (!policyErrorReported) {
+				policyErrorReported = true;
+				console.warn(
+					`mcp policy reload failed for ${configPath}; keeping ${liveUserServers}: ${errorMessage(cause)}`,
+				);
+			}
+			return;
+		}
 		if (next === liveUserServers) return policyRefresh;
 		liveUserServers = next;
-		policyRefresh = policyRefresh.then(
+		const chain = policyRefresh.then(
 			() => catalog.reconcileAll(next),
 			() => catalog.reconcileAll(next),
 		);
-		return policyRefresh;
+		// Retain a settled recovery point: one failed reconcile must not
+		// poison every subsequent activation with the same stale rejection.
+		policyRefresh = chain.catch(() => undefined);
+		await chain;
 	};
 
 	const pending: Promise<void>[] = [];

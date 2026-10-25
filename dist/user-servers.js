@@ -161,6 +161,9 @@ function userServersFromSettings(settings) {
     if (settings.servers === undefined)
         return {};
     let value = settings.servers;
+    // An untouched or cleared longtext field persists an empty string.
+    if (typeof value === "string" && value.trim() === "")
+        return {};
     if (typeof value === "string") {
         // Extension-scope longtext saves preserve strings, unlike the core
         // settings adapter's JSON parsing, so both persisted shapes are valid.
