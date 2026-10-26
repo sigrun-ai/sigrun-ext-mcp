@@ -21,6 +21,7 @@ import {
 import { connectMcpServer } from "../src/client.js";
 import { MCP_CONFIG_ENV } from "../src/config.js";
 import { createMcpExtension } from "../src/extension.js";
+import { createCatalogHost } from "./catalog-host.js";
 import {
 	cleanupDir,
 	openMcpHarness,
@@ -154,7 +155,7 @@ test("malformed config throws a clear error from the factory (quarantine semanti
 		const prior = process.env[MCP_CONFIG_ENV];
 		process.env[MCP_CONFIG_ENV] = path;
 		try {
-			expect(() => createMcpExtension()).toThrow(/not valid JSON/);
+			expect(() => createMcpExtension(createCatalogHost().host)).toThrow(/not valid JSON/);
 		} finally {
 			if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
 			else process.env[MCP_CONFIG_ENV] = prior;
@@ -169,6 +170,10 @@ test("a tools/call that never answers REJECTS at the per-request deadline (confi
 	try {
 		await writeConfig(stubConfigPath(dir), {
 			hang: {
+				// Keep this deadline test on the shared system-tool path; the
+				// per-user default intentionally requires an owner and a service.
+				credentials: "shared",
+				sharedAuthority: "Synthetic shared test authority",
 				command: process.execPath,
 				args: [HANG_SERVER],
 				env: { HANG_MODE: "silent" },
@@ -191,7 +196,7 @@ test("a tools/call that never answers REJECTS at the per-request deadline (confi
 			expect(hangTool).toBeDefined();
 			const started = Date.now();
 			await expect(
-				hangTool!.execute({}, { registry: opened.registry.snapshot() } as never, BACKGROUND_CONTEXT),
+				hangTool!.execute({}, { registry: opened.registry.snapshot(), conversationId: 1 } as never, BACKGROUND_CONTEXT),
 			).rejects.toThrow(/timed out after 0\.3s/);
 			// The deadline actually governed: not instant, not the default 60s.
 			const elapsed = Date.now() - started;

@@ -44,6 +44,20 @@ export declare function makePkcePair(): {
 };
 /** Build the authorize URL (PKCE S256 + optional scopes + redirect_uri). */
 export declare function buildAuthorizeUrl(oauth: McpOAuthConfig, redirectUri: string, codeChallenge: string): string;
+interface PendingUserFlow {
+    readonly verifier: string;
+    readonly redirectUri: string;
+    readonly expiresAt: number;
+}
+export type UserOauthFlow = PendingUserFlow;
+/** In-memory PKCE state for extension routes; the caller owns token storage. */
+export declare function createUserOauthFlows(now?: () => number): {
+    start(user: string, server: string, oauth: McpOAuthConfig, redirectUri: string): string;
+    take(user: string, server: string): UserOauthFlow | undefined;
+    release(user: string, server: string, flow: UserOauthFlow): void;
+    pendingCount(): number;
+    clear(): void;
+};
 /** Oauth start options (defaults match the CLI: 5-minute timeout). */
 export interface StartOauthOptions {
     /** How long to wait for a code (listener or paste) before failing. */
@@ -58,3 +72,4 @@ export interface StartOauthOptions {
  * resolves with the STORED token (written to the token store).
  */
 export declare function startOauth(serverName: string, oauth: McpOAuthConfig, options?: StartOauthOptions): Promise<OauthFlow>;
+export {};

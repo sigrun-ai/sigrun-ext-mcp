@@ -105,8 +105,22 @@ export function serverEnabled(server: McpServerConfig): boolean {
 	return server.enabled !== false && server.disabled !== true;
 }
 
+/** Who supplies the server's authority and owns its connection lifecycle. */
+export type McpCredentials = "user" | "shared";
+
+/** Whether every user starts enabled or must explicitly opt in. */
+export type McpAvailability = "all" | "opt-in";
+
 /** Fields every server variant carries regardless of transport. */
 interface McpServerCommon {
+	/** Per-user jailed connections by default; shared authority is opt-in. */
+	readonly credentials?: McpCredentials;
+	/** Required for shared entries: why lending this authority is acceptable. */
+	readonly sharedAuthority?: string;
+	/** Optional allowlist for a shared entry; rejected for user credentials. */
+	readonly users?: readonly string[];
+	/** Absent user settings mean enabled for all, disabled for opt-in. */
+	readonly availability?: McpAvailability;
 	/** Skip this server entirely (default false). */
 	readonly disabled?: boolean;
 	/** Skip this server entirely (default true; contradicts `disabled`). */
@@ -166,9 +180,12 @@ export interface McpOAuthConfig {
 	readonly codeChallengeMethod?: string;
 }
 
+export type UserServersMode = "none" | "remote" | "all";
+
 /** The parsed `mcp.json` body. */
 export interface McpConfig {
 	readonly servers: Readonly<Record<string, McpServerConfig>>;
+	readonly userServers?: UserServersMode;
 }
 
 /** The env override the config store reads. */
@@ -218,6 +235,12 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 	if (!isRecord(parsed)) {
 		throw new Error(`mcp config ${source} must be a JSON object`);
 	}
+	const userServers = parsed.userServers ?? "none";
+	if (userServers !== "none" && userServers !== "remote" && userServers !== "all") {
+		throw new Error(
+			`mcp config ${source}: userServers must be one of "none", "remote", "all"`,
+		);
+	}
 	const servers: Record<string, McpServerConfig> = {};
 	const rawServers = parsed.servers;
 	if (!isRecord(rawServers)) {
@@ -226,6 +249,16 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 		);
 	}
 	for (const [name, entry] of Object.entries(rawServers)) {
+		if (name === "servers") {
+			throw new Error(
+				`mcp config ${source}: server "servers" uses the reserved user settings namespace`,
+			);
+		}
+		if (name.startsWith("u_")) {
+			throw new Error(
+				`mcp config ${source}: server "${name}" uses the reserved "u_" prefix`,
+			);
+		}
 		if (!isRecord(entry)) {
 			throw new Error(
 				`mcp config ${source}: server "${name}" must be an object`,
@@ -277,6 +310,44 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 		) {
 			throw new Error(
 				`mcp config ${source}: server "${name}" env must map strings to strings`,
+			);
+		}
+		const credentials: McpCredentials = (entry.credentials ?? "user") as McpCredentials;
+		if (credentials !== "user" && credentials !== "shared") {
+			throw new Error(
+				`mcp config ${source}: server "${name}" credentials must be "user" or "shared"`,
+			);
+		}
+		if (
+			credentials === "shared" &&
+			(typeof entry.sharedAuthority !== "string" ||
+				entry.sharedAuthority.trim() === "")
+		) {
+			throw new Error(
+				`mcp config ${source}: server "${name}" requires a non-empty sharedAuthority when credentials are "shared"`,
+			);
+		}
+		if (entry.users !== undefined) {
+			if (credentials !== "shared") {
+				throw new Error(
+					`mcp config ${source}: server "${name}" users is only valid with credentials "shared"`,
+				);
+			}
+			if (
+				!Array.isArray(entry.users) ||
+				entry.users.some(
+					(user) => typeof user !== "string" || user.trim() === "",
+				)
+			) {
+				throw new Error(
+					`mcp config ${source}: server "${name}" users must be a string[] of non-empty users`,
+				);
+			}
+		}
+		const availability: McpAvailability = (entry.availability ?? "all") as McpAvailability;
+		if (availability !== "all" && availability !== "opt-in") {
+			throw new Error(
+				`mcp config ${source}: server "${name}" availability must be "all" or "opt-in"`,
 			);
 		}
 		if (entry.disabled !== undefined && typeof entry.disabled !== "boolean") {
@@ -335,6 +406,19 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 			entry.oauth === undefined
 				? undefined
 				: parseOauthEntry(entry.oauth, source, name);
+		const catalog = {
+			// Preserve the pre-catalog serialized shape when both fields are
+			// absent. Consumers use nullish defaults, so omitted and explicit
+			// default values are equivalent without changing legacy fixtures.
+			...(entry.credentials === undefined ? {} : { credentials }),
+			...(entry.availability === undefined ? {} : { availability }),
+			...(entry.sharedAuthority === undefined
+				? {}
+				: { sharedAuthority: entry.sharedAuthority as string }),
+			...(entry.users === undefined
+				? {}
+				: { users: entry.users as string[] }),
+		} as const;
 		// The common optionals first, then the transport arm's own fields —
 		// the union stays discriminable by "command" vs "url" presence.
 		servers[name] = hasUrl
@@ -348,6 +432,7 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 					...(exposure === undefined ? {} : { exposure }),
 					...(toolExposure === undefined ? {} : { toolExposure }),
 					...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
+					...catalog,
 				}
 			: {
 					command: entry.command as string,
@@ -361,9 +446,10 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 					...(toolExposure === undefined ? {} : { toolExposure }),
 					...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
 					...(oauth === undefined ? {} : { oauth }),
+					...catalog,
 				};
 	}
-	return { servers };
+	return { servers, userServers };
 }
 
 /** Parse one server's oauth block. Fail-loud on a wrong shape: a

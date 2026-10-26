@@ -33,10 +33,20 @@ export interface McpClient {
     /** Tear the connection down (idempotent). */
     close(): void;
 }
+/** The byte streams of a core-launched per-user service. */
+export interface McpServiceHandle {
+    readonly stdin: WritableStream<Uint8Array>;
+    readonly stdout: ReadableStream<Uint8Array>;
+    readonly exited: Promise<{
+        code: number | null;
+        signal: string | null;
+    }>;
+    release(): void;
+}
 /**
  * Spawn/connect one configured MCP server (stdio or remote by config
  * shape). Throws on spawn/connect failure or a failed handshake —
  * per-server isolation is the CALLER's policy (the extension connects all
  * servers with `.catch` per server).
  */
-export declare function connectMcpServer(name: string, config: McpServerConfig): Promise<McpClient>;
+export declare function connectMcpServer(name: string, config: McpServerConfig, handle?: McpServiceHandle): Promise<McpClient>;

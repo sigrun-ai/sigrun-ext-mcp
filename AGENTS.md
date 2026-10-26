@@ -29,11 +29,19 @@ extension loader. Small, single-purpose, no cross-extension coupling.
 ## Run and test
 
 ```sh
-npm install
+npm install         # needs the sibling `../sigrun` checkout (below)
 npm test            # vitest
 npm run typecheck   # tsc --noEmit
 npm run build       # tsc -> dist/ (commit the result)
 ```
+
+`@sigrun/sigrun` is a `file:../sigrun` **devDependency** (dev-only: `src/`
+imports nothing from sigrun, so nothing ships at runtime). The catalog
+settings-section test runs the form through core's real block validator
+(`@sigrun/sigrun/blocks`), so `npm install` fails ENOENT without that
+sibling checkout — the honest failure, not a skip. The validator resolves
+the sibling's built `dist/blocks`, so rebuild core after changing its
+block schema or the test can pass against a stale block set.
 
 ## Conventions
 

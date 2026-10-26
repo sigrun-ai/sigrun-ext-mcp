@@ -6,8 +6,6 @@ export { loadMcpTokens, MCP_ACCESS_TOKEN_ENV, parseMcpTokenStore, resolveMcpToke
 export { buildAuthorizeUrl, exchangeCode, extractCode, makePkcePair, startOauth, } from "./oauth.js";
 export { parseCliArgs, runCli } from "./cli.js";
 import { createMcpExtension } from "./extension.js";
-/**
- * The sigrun extension-package contract (src/harness/loader.ts): the default
- * export is a factory taking no arguments, returning `{ extension }`.
- */
+/** The required host parameter keeps this factory at arity one: sigrun's
+ * loader does not pass a host to optional/defaulted (length-zero) factories. */
 export default createMcpExtension;

@@ -33,8 +33,25 @@ bare user install falls back to `~/.config/sigrun/mcp.json`; the
   `endpoint` event + message POSTs) is adopted automatically, so no adapter
   process is needed.
 - `headers` (remote) — extra request headers (auth etc.), sent on every
-  request.
-- `env` (stdio) — extra environment variables for the child process.
+  request. For per-user servers, configured `Authorization` is removed;
+  only that user's scoped token supplies it.
+- `env` (stdio) — extra environment variables for the child process. For
+  per-user servers, configured `MCP_ACCESS_TOKEN` is removed; only that
+  user's scoped token supplies it.
+- `credentials` — `"user"` (default) or `"shared"`. User-credential servers
+  start per user in the host's service jail; remote user servers connect
+  with the user's scoped token. Existing installs needing one system-wide
+  server must explicitly select `"shared"`.
+- `sharedAuthority` — required, non-empty one-line reason when
+  `credentials` is `"shared"`. Shared MCP servers hand every permitted
+  user's agent the admin's credential for that service; the settings
+  section displays this reason and warning beside the server.
+- `users` — optional string allowlist for a shared server. Only those
+  users may call its tools; this field is invalid for user-credential
+  servers. Ownerless calls fail closed.
+- `availability` — `"all"` (default) or `"opt-in"`. The per-user settings
+  section stores each server's enablement as a flat boolean keyed by its
+  bare server name. `"all"` starts enabled; `"opt-in"` starts disabled.
 - `enabled` (default `true`) / `disabled` — skip the server entirely. Set one,
   never both: a server that is simultaneously on and off is a config error and
   fails loudly.
@@ -46,9 +63,47 @@ bare user install falls back to `~/.config/sigrun/mcp.json`; the
 - `toolExposure` — per-tool overrides of `exposure`: an object mapping tool
   names (exact) or `*`-globs (e.g. `"get-*"`) to exposure words. An exact name
   always wins; among matching patterns the FIRST one in config order wins.
-- `oauth` (stdio) — the authorization-code (PKCE) flow block; see
-  `sigrun-ext-mcp oauth <server>` (the CLI mints and stores a token; the spawn
-  injects it).
+- `oauth` (stdio) — the authorization-code (PKCE) flow block. Shared servers
+  use `sigrun-ext-mcp oauth <server>` and the file token store. Per-user
+  servers use `POST /v1/ext/sigrun-mcp/oauth/<server>/start`, then
+  `POST /v1/ext/sigrun-mcp/oauth/<server>/complete` with
+  `{ "redirectedUrl": "<full redirected URL>" }`; the CLI refuses these
+  servers so their credentials cannot enter the shared store.
+
+Per-user PKCE state stays in memory for ten minutes and is scoped to the
+authenticated user and server. Completion stores only the raw access token in
+that user's `token:<server>` secret. It then retires and reconnects that
+user's catalog connection. Core owns the process lifecycle: releasing the last
+handle arms idle-stop, so a still-live child keeps its original environment
+until that timer fires or it crashes; the extension cannot force a relaunch
+through the host contract. An already idle-stopped server launches fresh on
+the next activation and reads the new token immediately.
+
+`userServers` is the separate admin policy for user-supplied servers:
+`"none"` (default), `"remote"`, or `"all"`. It is distinct from the admin
+catalog's `credentials` and `availability` fields above. Catalog names
+starting `u_` are reserved for those user-supplied servers and rejected.
+
+When enabled, the **Your MCP servers** settings section accepts a JSON object
+under the `servers` key. Entries use the same validation rules as `mcp.json`;
+a user server name may not start with `u_`. Its tools publish only to that
+user as `u_<server>/<tool>`. `"remote"` permits URL servers and ignores stdio;
+`"all"` permits URL servers too. A live policy change reconciles every active
+user, retiring disallowed connections and removing their tools without a
+restart. Lifecycle events re-read the policy from `mcp.json`, since this
+operator file is not part of core's settings document. The contributed
+settings sections are selected at extension load: changing `none` to an
+enabled policy needs a restart to add the editor, and changing to `none`
+needs a restart to remove it; connection gating itself takes effect at the
+next lifecycle event. A catalog server literally named `servers` is rejected
+because it would shadow this settings namespace.
+
+**Named limitation — `all` and user-supplied stdio:** sigrun declares per-user
+services statically at load and passes no server name to `UserService.start`.
+Consequently a dynamic, named user-supplied stdio service cannot be launched.
+Under `"all"`, such an entry is reported as a configuration error naming the
+server; its command is never spawned in sigrun's process, and no tools are
+published. `"all"` does **not** make user-supplied stdio functional.
 
 ## Exposure: how tools reach callers
 

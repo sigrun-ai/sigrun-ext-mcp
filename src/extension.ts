@@ -1,46 +1,23 @@
-/**
- * The MCP extension (sigrun-ext-mcp): registers every tool discovered on
- * the configured MCP servers as a pi-durable tool named
- * `<server>/<toolname>` (ruling 4).
- *
- * Contract (sigrun's src/harness/loader.ts): the package default-exports a
- * FACTORY TAKING NO ARGUMENTS, returning `{ extension }`. The loader calls
- * it synchronously at boot, before `Harness.open` reads the registry — so
- * the factory returns immediately and the async connect/discover work lands
- * through a LIVE tools array (the registry re-reads `extension.tools` on
- * every snapshot, so tools discovered after install appear in the harness
- * without a reinstall).
- *
- * Lifecycle (ruling 5): servers spawn eagerly at factory time (a server is
- * a long-lived stdio process; lazy-at-first-use buys nothing and complicates
- * discovery visibility). Each server is ISOLATED: a spawn or handshake or
- * discovery failure quarantines just that server (warned, contributing no
- * tools) and never affects the others. Children are killed on process exit
- * and on `wiring.close()`; there is no loader-side uninstall callback to
- * hook.
- *
- * Config (ruling 2): `mcp.json` resolved as `SIGRUN_MCP_CONFIG` env
- * override → `~/.config/sigrun/mcp.json`. Malformed config THROWS from the
- * factory (the loader's quarantine semantics take over); a missing config
- * is an empty registry (the extension installs with zero tools).
- */
+/** Catalog wiring: shared operator services remain system children, while
+ * per-user entries connect and publish through the structural sigrun host. */
 
-import { Type } from "@earendil-works/pi-ai";
-import type { TSchema } from "typebox";
-import {
-	defineExtension,
-	defineTool,
-	type Extension,
-	type ToolRegistration,
-} from "@earendil-works/pi-durable";
+import { defineDoc, defineExtension, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
+import type { PromptInput } from "@earendil-works/pi-durable";
 import { connectMcpServer, type McpClient } from "./client.js";
 import {
-	isStdioServer,
 	loadMcpConfig,
-	resolveToolExposure,
+	MCP_CONFIG_ENV,
+	resolveMcpConfigPath,
 	serverEnabled,
-	type McpExposure,
+	type McpOAuthConfig,
+	type McpStdioServerConfig,
 } from "./config.js";
+import {
+	createUserOauthFlows,
+	exchangeCode,
+	extractCode,
+} from "./oauth.js";
+import { storeUserMcpToken } from "./tokens.js";
 import {
 	MCP_SERVERS_SECTION_KEY,
 	partitionForSection,
@@ -48,124 +25,146 @@ import {
 	type McpServerSectionEntry,
 	type Reach,
 } from "./section.js";
-import type {
-	McpContentBlock,
-	McpToolDefinition,
-	McpToolResult,
-} from "./types.js";
-import type { PromptInput } from "@earendil-works/pi-durable";
+import {
+	catalogEnabledFromSettings,
+	createUserCatalog,
+	sharedServerAllowed,
+	discoverMcpTools,
+	type CatalogSettingsSection,
+	type OwnerEvent,
+	type ServerExposure,
+	type SigrunHost,
+	type UserService,
+} from "./user-servers.js";
 
-/** The extension's pi-durable registry name. */
 export const MCP_EXTENSION_NAME = "sigrun.mcp";
 
-/** What {@link createMcpExtension} returns (the loader contract: `.extension`). */
+/** Standalone tokens need no registry install; the kind/version must match
+ * core's session-meta document so its committed owner is readable here. */
+const SessionOwnerDoc = defineDoc<{ owner?: string }>({
+	kind: "sigrun.session-meta",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "current",
+	initial: () => ({}),
+});
+
+export interface ExtensionRouteContribution {
+	readonly method: "POST";
+	readonly path: string;
+	readonly auth: "user";
+	handler(
+		request: Request,
+		ctx: { readonly principal?: { readonly user?: string }; readonly host: SigrunHost },
+	): Promise<Response>;
+}
+
 export interface McpWiring {
-	/** The extension to install into the harness registry. */
 	readonly extension: Extension;
-	/**
-	 * Kill every connected MCP server child process (idempotent). Called on
-	 * process exit automatically; hosts may call it on harness shutdown.
-	 */
-	close(): void;
-	/**
-	 * Resolves when every enabled server has connected (and discovered its
-	 * tools) or failed (isolated). Hosts that want tools present before
-	 * `Harness.open` reads the registry await this; the loader does not.
-	 */
+	readonly perUserTools: boolean;
+	readonly routes: readonly ExtensionRouteContribution[];
+	readonly userServices: readonly UserService[];
+	readonly surfaces: { readonly settings: readonly CatalogSettingsSection[] };
+	conversationCreated(event: OwnerEvent): Promise<void>;
+	runSettled(event: OwnerEvent): Promise<void>;
+	onSettingsChanged(keys: readonly string[], user?: string): Promise<void>;
+	/** Stop system clients immediately; per-user clients drain in-flight calls. */
+	close(): Promise<void>;
 	readonly ready: Promise<void>;
 }
 
-/** Render one MCP content block as pi-ai tool-result content. */
-function toContent(block: McpContentBlock): { type: "text"; text: string } {
-	if (block.type === "text" && typeof block.text === "string") {
-		return { type: "text", text: block.text };
-	}
-	return { type: "text", text: JSON.stringify(block) };
+function denied(message: string) {
+	return {
+		output: [{ type: "text" as const, text: message }],
+		isError: true,
+	};
 }
 
-/** Build the pi-durable tool for one discovered MCP tool. */
-function mcpTool(
-	serverName: string,
-	tool: McpToolDefinition,
-	client: McpClient,
-	exposure: McpExposure,
-	timeoutSeconds: number | undefined,
+/** The shared tool wrapper is the authority boundary: registry visibility is
+ * only convenience, and it cannot be bypassed by selecting an extension. */
+function sharedTool(
+	host: SigrunHost,
+	name: string,
+	server: Parameters<typeof sharedServerAllowed>[3],
+	tool: ToolRegistration,
 ): ToolRegistration {
-	// MCP advertises a plain JSON Schema for arguments. pi-durable validates
-	// with TypeBox's Compile, which accepts plain JSON Schema objects; pass it
-	// through as an unsafe schema (fallback: the empty object schema when the
-	// server omitted inputSchema).
-	const parameters = (
-		tool.inputSchema !== undefined &&
-		typeof tool.inputSchema === "object" &&
-		tool.inputSchema !== null
-			? tool.inputSchema
-			: { type: "object" }
-	) as unknown as TSchema;
-	const toolName = `${serverName}/${tool.name}`;
-	// The exposure mapping onto pi-durable 1.2.0 (spec slice 3):
-	//   codemode → callers: ["tools"] (scripts only, never model-offered);
-	//   deferred → deferred: true (invisible until tool_search loads it);
-	//   direct   → normal registration (model-offered when in the tool set);
-	//   hidden   → never registered (the caller checks and skips).
-	const exposureFlags =
-		exposure === "codemode"
-			? { callers: ["tools"] as const }
-			: exposure === "deferred"
-					? { deferred: true as const }
-					: {};
-	return defineTool({
-		name: toolName,
-		description:
-			tool.description !== undefined && tool.description !== ""
-				? tool.description
-				: `MCP tool ${tool.name} on server ${serverName}.`,
-		parameters: Type.Unsafe(parameters),
-		// A tools/call round-trip is external I/O; never rerun on recovery.
-		replay: "unsafe",
-		...exposureFlags,
-		async execute(args) {
-			const result: McpToolResult = await client.callTool(
-				tool.name,
-				{ ...(args as Record<string, unknown>) },
-				timeoutSeconds,
-			);
-			const blocks = result.content ?? [];
-			const content = blocks.length > 0 ? blocks.map(toContent) : [];
-			return {
-				output: content.length > 0 ? content : [
-					{ type: "text" as const, text: JSON.stringify(result) },
-				],
-				isError: result.isError === true,
-				details: result as unknown as import("@earendil-works/chord").JsonValue,
-			};
+	return {
+		...tool,
+		execute: async (args, api, context) => {
+			try {
+				if (!(await sharedServerAllowed(host, api.conversationId, name, server))) {
+					return denied(`MCP server "${name}" is not available for this user`);
+				}
+			} catch (cause) {
+				return denied(
+					`MCP server "${name}" access check failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+				);
+			}
+			return tool.execute(args, api, context);
 		},
-	});
+	};
 }
 
-/**
- * The extension factory (the loader contract: no arguments; config resolves
- * from the package context — the `SIGRUN_MCP_CONFIG` override or the sigrun
- * config dir).
- */
-export function createMcpExtension(): McpWiring {
-	const config = loadMcpConfig();
-	const tools: ToolRegistration[] = []; // live: discovered tools land here
-	const clients = new Map<string, McpClient>();
-	/** Live per-server exposure mix: which registered tools use codemode /
-	 * deferred (the section renders from this snapshot). */
-	const serverExposures = new Map<
-		string,
-		{ codemode: boolean; deferred: boolean; description: string; count: number }
-	>();
-	let closed = false;
+function errorMessage(cause: unknown): string {
+	return cause instanceof Error ? cause.message : String(cause);
+}
 
-	// Per-server isolation: each server connects independently; any failure
-	// quarantines that server alone (warned, zero tools) and the others
-	// proceed. A disabled server is skipped before it ever spawns.
+// The host parameter is REQUIRED: sigrun passes it only to factories whose
+// length is greater than zero. An optional/defaulted parameter has length 0
+// and would silently receive no host, disabling every per-user operation.
+export function createMcpExtension(host: SigrunHost): McpWiring {
+	// Pin the boot-selected path so policy reloads survive callers restoring
+	// their process environment immediately after the factory returns.
+	const configPath = resolveMcpConfigPath();
+	const config = loadMcpConfig();
+	const tools: ToolRegistration[] = [];
+	const clients = new Map<string, McpClient>();
+	const serverExposures = new Map<string, ServerExposure>();
+	const shared = Object.entries(config.servers).filter(
+		([, server]) => server.credentials === "shared" && serverEnabled(server),
+	);
+	const catalog = createUserCatalog(host, config.servers, config.userServers ?? "none");
+	const oauthFlows = createUserOauthFlows();
+	let closed = false;
+	let liveUserServers = config.userServers ?? "none";
+	let policyRefresh: Promise<void> = Promise.resolve();
+	let policyErrorReported = false;
+	const refreshPolicy = async (): Promise<void> => {
+		// Lifecycle events are the production file-change signal: mcp.json is
+		// operator configuration, not part of core's settings document.
+		let next = liveUserServers;
+		try {
+			next = loadMcpConfig({
+				...process.env,
+				[MCP_CONFIG_ENV]: configPath,
+			}).userServers ?? "none";
+			policyErrorReported = false;
+		} catch (cause) {
+			// A transient operator edit must not suppress this event's user
+			// reconciliation or discard the last known-good policy.
+			if (!policyErrorReported) {
+				policyErrorReported = true;
+				console.warn(
+					`mcp policy reload failed for ${configPath}; keeping ${liveUserServers}: ${errorMessage(cause)}`,
+				);
+			}
+			return;
+		}
+		if (next === liveUserServers) return policyRefresh;
+		liveUserServers = next;
+		const chain = policyRefresh.then(
+			() => catalog.reconcileAll(next),
+			() => catalog.reconcileAll(next),
+		);
+		// Retain a settled recovery point: one failed reconcile must not
+		// poison every subsequent activation with the same stale rejection.
+		policyRefresh = chain.catch(() => undefined);
+		await chain;
+	};
+
 	const pending: Promise<void>[] = [];
-	for (const [name, server] of Object.entries(config.servers)) {
-		if (!serverEnabled(server)) continue;
+	for (const [name, server] of shared) {
 		pending.push(
 			(async () => {
 				let client: McpClient;
@@ -173,9 +172,7 @@ export function createMcpExtension(): McpWiring {
 					client = await connectMcpServer(name, server);
 				} catch (cause) {
 					console.warn(
-						`mcp server "${name}" quarantined: ${
-							cause instanceof Error ? cause.message : String(cause)
-						}`,
+						`mcp server "${name}" quarantined: ${errorMessage(cause)}`,
 					);
 					return;
 				}
@@ -185,67 +182,192 @@ export function createMcpExtension(): McpWiring {
 				}
 				clients.set(name, client);
 				try {
-					const discovered = await client.listTools();
-					const mix = { codemode: false, deferred: false, count: 0 };
-					for (const tool of discovered) {
-						const exposure = resolveToolExposure(server, tool.name);
-							if (exposure === "hidden") continue; // not registered
-							if (exposure === "codemode") mix.codemode = true;
-							if (exposure === "deferred") mix.deferred = true;
-							mix.count += 1;
-						tools.push(
-								mcpTool(name, tool, client, exposure, server.timeout),
-						);
+					const discovered = await discoverMcpTools(name, server, client);
+					if (closed) {
+						client.close();
+						return;
 					}
-					if (mix.count > 0 && (mix.codemode || mix.deferred)) {
-				const origin = isStdioServer(server)
-					? `${server.command} ${server.args.join(" ")}`.trim()
-					: server.url;
-				serverExposures.set(name, {
-						...mix,
-						description: `${mix.count} tool${
-							mix.count === 1 ? "" : "s"
-						} from ${origin}`.trim(),
-					});
+					tools.push(
+						...discovered.tools.map((tool) => sharedTool(host, name, server, tool)),
+					);
+					if (discovered.exposure !== undefined) {
+						serverExposures.set(name, discovered.exposure);
 					}
 				} catch (cause) {
 					clients.delete(name);
 					client.close();
 					console.warn(
-						`mcp server "${name}" quarantined during discovery: ${
-							cause instanceof Error ? cause.message : String(cause)
-						}`,
+						`mcp server "${name}" quarantined during discovery: ${errorMessage(cause)}`,
 					);
 				}
 			})(),
 		);
 	}
 
-	const killAll = () => {
+	const activate = async (event: OwnerEvent): Promise<void> => {
+		await refreshPolicy();
+		if (event.owner !== undefined) await catalog.activate(event.owner);
+	};
+
+	const errorResponse = (status: number, error: string): Response =>
+		Response.json({ error }, { status });
+	const serverFromRequest = (request: Request): string | undefined => {
+		const match = new URL(request.url).pathname.match(
+			/\/v1\/ext\/sigrun-mcp\/oauth\/([^/]+)\/(?:start|complete)$/,
+		);
+		if (match === null) return undefined;
+		try {
+			return decodeURIComponent(match[1]);
+		} catch {
+			return undefined;
+		}
+	};
+	const oauthServer = (name: string | undefined):
+		| (McpStdioServerConfig & { readonly oauth: McpOAuthConfig })
+		| undefined => {
+		if (name === undefined) return undefined;
+		const server = config.servers[name];
+		if (
+			server === undefined ||
+			server.credentials === "shared" ||
+			!serverEnabled(server) ||
+			!("oauth" in server) ||
+			server.oauth === undefined
+		) return undefined;
+		return { ...server, oauth: server.oauth };
+	};
+	const userFrom = (ctx: { readonly principal?: { readonly user?: string } }) =>
+		ctx.principal?.user;
+
+	const routes: readonly ExtensionRouteContribution[] = [
+		{
+			method: "POST",
+			path: "oauth/:server/start",
+			auth: "user",
+			handler: async (request, ctx) => {
+				const user = userFrom(ctx);
+				if (user === undefined) return errorResponse(400, "no_pending_flow");
+				const name = serverFromRequest(request);
+				const server = oauthServer(name);
+				if (name === undefined || server === undefined) {
+					return errorResponse(404, "unknown_server");
+				}
+				// No listener: the browser is redirected back to the complete
+				// endpoint, whose URL the user can paste from the address bar.
+				const redirectUri = new URL(
+					`/v1/ext/sigrun-mcp/oauth/${encodeURIComponent(name)}/complete`,
+					request.url,
+				).toString();
+				const url = oauthFlows.start(user, name, server.oauth, redirectUri);
+				return Response.json({ url });
+			},
+		},
+		{
+			method: "POST",
+			path: "oauth/:server/complete",
+			auth: "user",
+			handler: async (request, ctx) => {
+				const user = userFrom(ctx);
+				if (user === undefined) return errorResponse(400, "no_pending_flow");
+				const name = serverFromRequest(request);
+				const server = oauthServer(name);
+				if (name === undefined || server === undefined) {
+					return errorResponse(404, "unknown_server");
+				}
+				let redirectedUrl: string;
+				try {
+					const body: unknown = await request.json();
+					if (
+						typeof body !== "object" || body === null || Array.isArray(body) ||
+						!("redirectedUrl" in body) ||
+						typeof body.redirectedUrl !== "string" || body.redirectedUrl === ""
+					) throw new Error("invalid body");
+					redirectedUrl = body.redirectedUrl;
+				} catch {
+					return errorResponse(400, "invalid_body");
+				}
+				const flow = oauthFlows.take(user, name);
+				if (flow === undefined) return errorResponse(400, "no_pending_flow");
+				let code: string;
+				try {
+					const extracted = extractCode(redirectedUrl);
+					if (!("code" in extracted)) throw new Error("authorization failed");
+					code = extracted.code;
+				} catch {
+					oauthFlows.release(user, name, flow);
+					return errorResponse(400, "invalid_redirect");
+				}
+				let token: Awaited<ReturnType<typeof exchangeCode>>;
+				try {
+					token = await exchangeCode(server.oauth, code, flow.redirectUri, flow.verifier);
+				} catch {
+					return errorResponse(502, "exchange_failed");
+				}
+				await storeUserMcpToken(ctx.host, user, name, token.access_token);
+				await catalog.retire(user, name);
+				await catalog.activate(user);
+				return new Response(null, { status: 204 });
+			},
+		},
+	];
+
+	const close = async (): Promise<void> => {
 		if (closed) return;
 		closed = true;
+		process.off("exit", closeSystemClients);
 		for (const client of clients.values()) client.close();
 		clients.clear();
 		tools.length = 0;
 		serverExposures.clear();
+		await Promise.all(pending);
+		oauthFlows.clear();
+		catalog.close();
 	};
 
-	// Children must not outlive this process. The exit handler must be
-	// synchronous (exit listeners cannot await), so it only SIGTERMs.
-	process.on("exit", killAll);
+	const closeSystemClients = () => {
+		for (const client of clients.values()) client.close();
+		clients.clear();
+		catalog.close();
+	};
+	process.on("exit", closeSystemClients);
 
-	// NOTE: no factory-time boot log for codemode/deferred servers —
-	// exposure is only known AFTER discovery (per-tool resolution), so a
-	// warn here could only fire on config guesses; the per-request
-	// `mcp_servers` section (below) is the real, accurate warning channel.
-
-	// The `mcp_servers` section (rev 3's corrected warning channel): renders
-	// per request from the live agent. A codemode/deferred server appears ONLY
-	// when its discovery tool (codemode / tool_search) is model-offered in
-	// THIS request; unreachable servers collapse into one notice line.
-	const mcpServersSection = (input: PromptInput): string | undefined => {
+	const mcpServersSection = async (
+		input: PromptInput,
+		context: Parameters<NonNullable<Extension["sections"]>[number]["render"]>[1],
+	): Promise<string | undefined> => {
+		let user: string | undefined;
+		let settings: Record<string, unknown> | undefined;
+		try {
+			// PromptInput.read uses only committed harness state. The host identity
+			// bridge is server-bound and may never resolve in harness-only boots.
+			user = (await input.read.snapshot(SessionOwnerDoc, input.conversationId, context))?.owner;
+			if (user !== undefined) {
+				settings = await host.stores.user(user).settings.get();
+			}
+		} catch (cause) {
+			console.warn(`mcp section access read failed: ${errorMessage(cause)}`);
+			return undefined;
+		}
+		const reachable = new Map<string, ServerExposure>();
+		for (const [name, server] of shared) {
+			if (
+				user !== undefined &&
+				settings !== undefined &&
+				(server.users === undefined || server.users.includes(user)) &&
+				catalogEnabledFromSettings(name, server, settings)
+			) {
+				const exposure = serverExposures.get(name);
+				if (exposure !== undefined) reachable.set(name, exposure);
+			}
+		}
+		if (user !== undefined) {
+			await catalog.activate(user);
+			for (const [name, exposure] of catalog.exposures(user)) {
+				reachable.set(name, exposure);
+			}
+		}
 		const reaches = new Map<string, Reach>();
-		for (const [name, mix] of serverExposures) {
+		for (const [name, mix] of reachable) {
 			reaches.set(
 				name,
 				mix.codemode && mix.deferred
@@ -258,7 +380,7 @@ export function createMcpExtension(): McpWiring {
 		const offers = new Set(input.agent.tools.map((tool) => tool.name));
 		const { listed, unreachable } = partitionForSection(reaches, offers);
 		const entries: McpServerSectionEntry[] = listed.map((name) => {
-			const mix = serverExposures.get(name)!;
+			const mix = reachable.get(name)!;
 			return {
 				name,
 				description: mix.description,
@@ -275,18 +397,29 @@ export function createMcpExtension(): McpWiring {
 
 	const extension = defineExtension({
 		name: MCP_EXTENSION_NAME,
-		tools, // live array: the registry re-reads it on every snapshot
-		sections: [
-			{
-				key: MCP_SERVERS_SECTION_KEY,
-				render: mcpServersSection,
-			},
-		],
+		tools,
+		sections: [{ key: MCP_SERVERS_SECTION_KEY, render: mcpServersSection }],
 	});
 
 	return {
 		extension,
-		close: killAll,
+		perUserTools: catalog.perUserTools,
+		routes,
+		userServices: catalog.userServices,
+		surfaces: { settings: catalog.settings },
+		conversationCreated: activate,
+		runSettled: activate,
+		onSettingsChanged: async (keys, user) => {
+			if (
+				user !== undefined &&
+				(keys.includes("servers") || keys.some((key) => Object.hasOwn(config.servers, key)))
+			) {
+				await catalog.activate(user);
+			}
+			// The host has no settings-read hook. A visit that changes nothing
+			// starts nothing; the committed write is the actionable trigger.
+		},
+		close,
 		ready: Promise.all(pending).then(() => undefined),
 	};
 }

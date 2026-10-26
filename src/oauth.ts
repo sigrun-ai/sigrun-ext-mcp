@@ -186,6 +186,68 @@ export function buildAuthorizeUrl(
 	return url.toString();
 }
 
+const USER_FLOW_TTL_MS = 10 * 60_000;
+
+interface PendingUserFlow {
+	readonly verifier: string;
+	readonly redirectUri: string;
+	readonly expiresAt: number;
+}
+
+export type UserOauthFlow = PendingUserFlow;
+
+/** In-memory PKCE state for extension routes; the caller owns token storage. */
+export function createUserOauthFlows(now: () => number = Date.now) {
+	const pending = new Map<string, PendingUserFlow>();
+	const key = (user: string, server: string) => JSON.stringify([user, server]);
+	return {
+		start(
+			user: string,
+			server: string,
+			oauth: McpOAuthConfig,
+			redirectUri: string,
+		): string {
+			const startedAt = now();
+			// Opportunistic sweeping avoids factory timers while bounding state
+			// to distinct user/server flows started within one TTL window.
+			for (const [flowKey, flow] of pending) {
+				if (flow.expiresAt <= startedAt) pending.delete(flowKey);
+			}
+			const { verifier, challenge } = makePkcePair();
+			pending.set(key(user, server), {
+				verifier,
+				redirectUri,
+				expiresAt: startedAt + USER_FLOW_TTL_MS,
+			});
+			return buildAuthorizeUrl(oauth, redirectUri, challenge);
+		},
+		take(user: string, server: string): UserOauthFlow | undefined {
+			const flowKey = key(user, server);
+			const flow = pending.get(flowKey);
+			if (flow === undefined) return undefined;
+			// Claim before any asynchronous exchange so concurrent completions
+			// cannot reuse one authorization code or PKCE verifier.
+			pending.delete(flowKey);
+			if (flow.expiresAt <= now()) return undefined;
+			return flow;
+		},
+		release(user: string, server: string, flow: UserOauthFlow): void {
+			const flowKey = key(user, server);
+			// A newer start supersedes the old flow; an invalid paste must not
+			// restore stale state over its replacement.
+			if (!pending.has(flowKey) && flow.expiresAt > now()) {
+				pending.set(flowKey, flow);
+			}
+		},
+		pendingCount(): number {
+			return pending.size;
+		},
+		clear(): void {
+			pending.clear();
+		},
+	};
+}
+
 /** Oauth start options (defaults match the CLI: 5-minute timeout). */
 export interface StartOauthOptions {
 	/** How long to wait for a code (listener or paste) before failing. */

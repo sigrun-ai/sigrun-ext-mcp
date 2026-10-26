@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- **Upgrade behavior:** catalog servers now default to `credentials: "user"`.
+  Existing installs that rely on one system-wide server must explicitly
+  select `credentials: "shared"` and provide `sharedAuthority`. Shared MCP
+  servers hand every permitted user's agent the admin's credential for that
+  service.
+
+### Fixed
+- Per-user tool publication is declared even with an empty or shared-only
+  catalog, so lifecycle activation and prompt rendering no longer fail when
+  there are no personal catalog servers. Because the declaration is
+  unconditional, core's boot sweep now writes `sigrun.mcp@<owner>` into every
+  owned conversation's selection on the first boot after upgrading, even with
+  no `mcp.json` or `userServers: "none"`. That is a one-time durable write:
+  the name resolves to nothing while no tools are published, so nothing
+  changes for the conversation, and later boots report zero.
+- Catalog enablement now mounts through `surfaces.settings` and uses core's
+  actual flat settings shape: each toggle and changed key is the bare server
+  name. Shared-authority help is punctuated and guarded against missing
+  programmatic input.
+- Prompt sections resolve the conversation owner through the harness's
+  committed-read surface instead of the server-bound identity bridge, so
+  harness-only boots cannot hang while preparing a request.
+
+### Added
+- User-supplied MCP servers in per-user settings, gated by `userServers:
+  "none" | "remote" | "all"` and validated with the operator config parser.
+  Tools publish as `u_<server>/<tool>`; live policy changes reconcile every
+  active user. The `all` mode also permits URL servers, but reports
+  user-supplied stdio as a named configuration error because the host's
+  static user-service contract cannot launch it safely.
+- Per-user OAuth start/complete extension routes with ten-minute in-memory
+  PKCE state scoped by user and server. Completion stores the raw access
+  token in the caller's scoped secrets; the CLI refuses per-user servers.
+- Token storage retires and reconnects the caller's catalog connection.
+  Core owns the process lifecycle: a still-live child retains its original
+  environment until idle-stop or exit because the host contract cannot force
+  a relaunch.
+- MCP catalog entries default to per-user credentials, with lazy per-user
+  stdio services, scoped token injection, remote connections, and tools
+  published only for their owner. Opt-in availability and per-user settings
+  control enablement; disabling removes tools and drains active calls.
+- Shared entries require `sharedAuthority`, retain system-tool behavior,
+  and enforce their optional user allowlist and enablement at call time.
+  Prompt sections list only servers available to the calling user.
+
 ### Security
 - Stdio servers no longer inherit sigrun's environment. They are spawned
   with an allowlist (`PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_*`, `TZ`,

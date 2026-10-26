@@ -18,10 +18,12 @@ import {
 	createRegistry,
 	Harness,
 	type ModelRef,
+	ROOT_CONVERSATION_ID,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MCP_CONFIG_ENV } from "../src/config.js";
 import { createMcpExtension, type McpWiring } from "../src/extension.js";
+import { createCatalogHost } from "./catalog-host.js";
 
 /** Configure the factory's config store via the env override. */
 export function stubConfigPath(dir: string): string {
@@ -32,7 +34,19 @@ export async function writeConfig(
 	path: string,
 	servers: Record<string, unknown>,
 ): Promise<void> {
-	await writeFile(path, JSON.stringify({ servers }), "utf8");
+	// Legacy harness fixtures exercise system-child behavior. New catalog
+	// fixtures set credentials explicitly instead of inheriting this default.
+	const shared = Object.fromEntries(
+		Object.entries(servers).map(([name, server]) => [
+			name,
+			{
+				credentials: "shared",
+				sharedAuthority: "Synthetic shared test authority",
+				...(server as Record<string, unknown>),
+			},
+		]),
+	);
+	await writeFile(path, JSON.stringify({ servers: shared }), "utf8");
 }
 
 export interface OpenedHarness {
@@ -53,7 +67,19 @@ export async function openMcpHarness(
 	process.env[MCP_CONFIG_ENV] = stubConfigPath(dir);
 	let wiring: McpWiring;
 	try {
-		wiring = createMcpExtension();
+		const double = createCatalogHost();
+		double.actingUsers.set(ROOT_CONVERSATION_ID, "alice");
+		const { readFile } = await import("node:fs/promises");
+		const parsed = JSON.parse(
+			await readFile(stubConfigPath(dir), "utf8"),
+		) as { servers: Record<string, unknown> };
+		double.setSettings("alice", {
+			catalog: Object.fromEntries(
+				Object.keys(parsed.servers).map((name) => [name, true]),
+			),
+		});
+		wiring = createMcpExtension(double.host);
+		if (wiring.perUserTools) double.declarePerUserTools();
 	} finally {
 		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
 		else process.env[MCP_CONFIG_ENV] = prior;

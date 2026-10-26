@@ -283,6 +283,14 @@ class McpEngine implements McpClient {
 // stdio transport (the original): today's behavior, moved verbatim in shape.
 // ---------------------------------------------------------------------------
 
+/** The byte streams of a core-launched per-user service. */
+export interface McpServiceHandle {
+	readonly stdin: WritableStream<Uint8Array>;
+	readonly stdout: ReadableStream<Uint8Array>;
+	readonly exited: Promise<{ code: number | null; signal: string | null }>;
+	release(): void;
+}
+
 /** One connected stdio MCP server: a live child process speaking JSON-RPC. */
 class StdioTransport implements Transport {
 	readonly #engine: McpEngine;
@@ -370,6 +378,107 @@ class StdioTransport implements Transport {
 		this.#closed = true;
 		this.#process.kill("SIGTERM");
 		this.#engine.handleDeath(new Error("mcp client closed"));
+	}
+}
+
+/** MCP framing over a core-owned service's Web-standard streams. The host
+ * owns the jail and process; this transport owns only its stream handle. */
+class HandleTransport implements Transport {
+	readonly #engine: McpEngine;
+	readonly #handle: McpServiceHandle;
+	readonly #writer: WritableStreamDefaultWriter<Uint8Array>;
+	#closed = false;
+	#released = false;
+	#read: Promise<void>;
+
+	constructor(name: string, handle: McpServiceHandle) {
+		this.#handle = handle;
+		this.#engine = new McpEngine(name, this);
+		this.#writer = handle.stdin.getWriter();
+		this.#read = this.#readStdout(name);
+		void handle.exited.then(({ code, signal }) => {
+			this.#die(
+				new Error(
+					`mcp service exited (code ${code ?? "?"}, signal ${signal ?? "?"})`,
+				),
+			);
+		});
+	}
+
+	get engine(): McpEngine {
+		return this.#engine;
+	}
+
+	async #readStdout(name: string): Promise<void> {
+		const reader = this.#handle.stdout.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+		try {
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+				for (;;) {
+					const newline = buffer.indexOf("\n");
+					if (newline < 0) break;
+					const line = buffer.slice(0, newline).trim();
+					buffer = buffer.slice(newline + 1);
+					if (line === "") continue;
+					try {
+						this.#engine.handleFrame(JSON.parse(line) as JsonRpcFrame);
+					} catch {
+						// A non-JSON line is server chatter, not a protocol frame.
+					}
+				}
+			}
+			if (!this.#closed) {
+				this.#die(new Error(`mcp service "${name}" stdout ended`));
+			}
+		} catch (cause) {
+			if (!this.#closed) {
+				this.#die(
+					cause instanceof Error
+						? cause
+						: new Error(`mcp service "${name}" stream failed`),
+				);
+			}
+		} finally {
+			reader.releaseLock();
+		}
+	}
+
+	#die(error: Error): void {
+		if (this.#closed) return;
+		this.#closed = true;
+		this.#engine.handleDeath(error);
+		this.#release();
+	}
+
+	#release(): void {
+		if (this.#released) return;
+		this.#released = true;
+		this.#handle.release();
+	}
+
+	send(frame: JsonRpcFrame): Promise<void> {
+		if (this.#closed) {
+			return Promise.reject(new Error("mcp service transport is closed"));
+		}
+		return this.#writer.write(
+			new TextEncoder().encode(JSON.stringify(frame) + "\n"),
+		);
+	}
+
+	close(): void {
+		if (this.#closed) return;
+		this.#closed = true;
+		void this.#writer.close().catch((cause: unknown) => {
+			console.warn(
+				`mcp service stdin close failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+			);
+		});
+		this.#engine.handleDeath(new Error("mcp client closed"));
+		this.#release();
 	}
 }
 
@@ -813,9 +922,17 @@ class HttpTransport implements Transport {
 export async function connectMcpServer(
 	name: string,
 	config: McpServerConfig,
+	handle?: McpServiceHandle,
 ): Promise<McpClient> {
 	let engine: McpEngine;
-	if ("url" in config) {
+	if (handle !== undefined) {
+		if (!("command" in config)) {
+			handle.release();
+			throw new Error(`mcp server "${name}" remote transport cannot use a service handle`);
+		}
+		const transport = new HandleTransport(name, handle);
+		engine = transport.engine;
+	} else if ("url" in config) {
 		const transport = new HttpTransport(name, config);
 		engine = transport.engine;
 	} else {

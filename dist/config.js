@@ -128,12 +128,22 @@ export function parseMcpConfig(text, source) {
     if (!isRecord(parsed)) {
         throw new Error(`mcp config ${source} must be a JSON object`);
     }
+    const userServers = parsed.userServers ?? "none";
+    if (userServers !== "none" && userServers !== "remote" && userServers !== "all") {
+        throw new Error(`mcp config ${source}: userServers must be one of "none", "remote", "all"`);
+    }
     const servers = {};
     const rawServers = parsed.servers;
     if (!isRecord(rawServers)) {
         throw new Error(`mcp config ${source} must have a "servers" object mapping names to server entries`);
     }
     for (const [name, entry] of Object.entries(rawServers)) {
+        if (name === "servers") {
+            throw new Error(`mcp config ${source}: server "servers" uses the reserved user settings namespace`);
+        }
+        if (name.startsWith("u_")) {
+            throw new Error(`mcp config ${source}: server "${name}" uses the reserved "u_" prefix`);
+        }
         if (!isRecord(entry)) {
             throw new Error(`mcp config ${source}: server "${name}" must be an object`);
         }
@@ -167,6 +177,28 @@ export function parseMcpConfig(text, source) {
             (!isRecord(entry.env) ||
                 Object.values(entry.env).some((v) => typeof v !== "string"))) {
             throw new Error(`mcp config ${source}: server "${name}" env must map strings to strings`);
+        }
+        const credentials = (entry.credentials ?? "user");
+        if (credentials !== "user" && credentials !== "shared") {
+            throw new Error(`mcp config ${source}: server "${name}" credentials must be "user" or "shared"`);
+        }
+        if (credentials === "shared" &&
+            (typeof entry.sharedAuthority !== "string" ||
+                entry.sharedAuthority.trim() === "")) {
+            throw new Error(`mcp config ${source}: server "${name}" requires a non-empty sharedAuthority when credentials are "shared"`);
+        }
+        if (entry.users !== undefined) {
+            if (credentials !== "shared") {
+                throw new Error(`mcp config ${source}: server "${name}" users is only valid with credentials "shared"`);
+            }
+            if (!Array.isArray(entry.users) ||
+                entry.users.some((user) => typeof user !== "string" || user.trim() === "")) {
+                throw new Error(`mcp config ${source}: server "${name}" users must be a string[] of non-empty users`);
+            }
+        }
+        const availability = (entry.availability ?? "all");
+        if (availability !== "all" && availability !== "opt-in") {
+            throw new Error(`mcp config ${source}: server "${name}" availability must be "all" or "opt-in"`);
         }
         if (entry.disabled !== undefined && typeof entry.disabled !== "boolean") {
             throw new Error(`mcp config ${source}: server "${name}" disabled must be a boolean`);
@@ -204,6 +236,19 @@ export function parseMcpConfig(text, source) {
         const oauth = entry.oauth === undefined
             ? undefined
             : parseOauthEntry(entry.oauth, source, name);
+        const catalog = {
+            // Preserve the pre-catalog serialized shape when both fields are
+            // absent. Consumers use nullish defaults, so omitted and explicit
+            // default values are equivalent without changing legacy fixtures.
+            ...(entry.credentials === undefined ? {} : { credentials }),
+            ...(entry.availability === undefined ? {} : { availability }),
+            ...(entry.sharedAuthority === undefined
+                ? {}
+                : { sharedAuthority: entry.sharedAuthority }),
+            ...(entry.users === undefined
+                ? {}
+                : { users: entry.users }),
+        };
         // The common optionals first, then the transport arm's own fields —
         // the union stays discriminable by "command" vs "url" presence.
         servers[name] = hasUrl
@@ -217,6 +262,7 @@ export function parseMcpConfig(text, source) {
                 ...(exposure === undefined ? {} : { exposure }),
                 ...(toolExposure === undefined ? {} : { toolExposure }),
                 ...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
+                ...catalog,
             }
             : {
                 command: entry.command,
@@ -230,9 +276,10 @@ export function parseMcpConfig(text, source) {
                 ...(toolExposure === undefined ? {} : { toolExposure }),
                 ...(entry.timeout === undefined ? {} : { timeout: entry.timeout }),
                 ...(oauth === undefined ? {} : { oauth }),
+                ...catalog,
             };
     }
-    return { servers };
+    return { servers, userServers };
 }
 /** Parse one server's oauth block. Fail-loud on a wrong shape: a
  * half-configured block is a config error, not a silently-ignored field. */

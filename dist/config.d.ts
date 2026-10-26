@@ -34,8 +34,20 @@ export declare function resolveToolExposure(server: McpServerConfig, toolName: s
  * `disabled: true` both skip it (parse-time validation rejects
  * contradictions, so either false simply means off). */
 export declare function serverEnabled(server: McpServerConfig): boolean;
+/** Who supplies the server's authority and owns its connection lifecycle. */
+export type McpCredentials = "user" | "shared";
+/** Whether every user starts enabled or must explicitly opt in. */
+export type McpAvailability = "all" | "opt-in";
 /** Fields every server variant carries regardless of transport. */
 interface McpServerCommon {
+    /** Per-user jailed connections by default; shared authority is opt-in. */
+    readonly credentials?: McpCredentials;
+    /** Required for shared entries: why lending this authority is acceptable. */
+    readonly sharedAuthority?: string;
+    /** Optional allowlist for a shared entry; rejected for user credentials. */
+    readonly users?: readonly string[];
+    /** Absent user settings mean enabled for all, disabled for opt-in. */
+    readonly availability?: McpAvailability;
     /** Skip this server entirely (default false). */
     readonly disabled?: boolean;
     /** Skip this server entirely (default true; contradicts `disabled`). */
@@ -85,9 +97,11 @@ export interface McpOAuthConfig {
     /** PKCE method (optional; only "S256" is implemented — and always used). */
     readonly codeChallengeMethod?: string;
 }
+export type UserServersMode = "none" | "remote" | "all";
 /** The parsed `mcp.json` body. */
 export interface McpConfig {
     readonly servers: Readonly<Record<string, McpServerConfig>>;
+    readonly userServers?: UserServersMode;
 }
 /** The env override the config store reads. */
 export declare const MCP_CONFIG_ENV = "SIGRUN_MCP_CONFIG";

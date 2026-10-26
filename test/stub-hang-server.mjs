@@ -8,6 +8,8 @@
  *   unset/"silent"  — tools/call hangs silently (no progress, no reply)
  *   "progress"      — tools/call sends a progress notification every 100ms
  *                     forever, never replying
+ *   "finish"        — tools/call answers after 150ms, allowing lifecycle
+ *                     tests to overlap a real in-flight request with disable
  */
 
 import { createInterface } from "node:readline";
@@ -62,7 +64,15 @@ lines.on("line", (line) => {
 		// placement) — NO id fallback: this stub is the interop proof that
 		// the client actually sends the token there (token === id would
 		// otherwise mask a missing token).
-		if (HANG_MODE === "progress") {
+		if (HANG_MODE === "finish") {
+			setTimeout(() => {
+				write({
+					jsonrpc: "2.0",
+					id,
+					result: { content: [{ type: "text", text: "finished" }] },
+				});
+			}, 150);
+		} else if (HANG_MODE === "progress") {
 			const token = frame.params?._meta?.progressToken;
 			const tick = () =>
 				write({

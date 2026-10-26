@@ -183,9 +183,6 @@ class McpEngine {
         this.handleDeath(new Error("mcp client closed"));
     }
 }
-// ---------------------------------------------------------------------------
-// stdio transport (the original): today's behavior, moved verbatim in shape.
-// ---------------------------------------------------------------------------
 /** One connected stdio MCP server: a live child process speaking JSON-RPC. */
 class StdioTransport {
     #engine;
@@ -265,6 +262,98 @@ class StdioTransport {
         this.#closed = true;
         this.#process.kill("SIGTERM");
         this.#engine.handleDeath(new Error("mcp client closed"));
+    }
+}
+/** MCP framing over a core-owned service's Web-standard streams. The host
+ * owns the jail and process; this transport owns only its stream handle. */
+class HandleTransport {
+    #engine;
+    #handle;
+    #writer;
+    #closed = false;
+    #released = false;
+    #read;
+    constructor(name, handle) {
+        this.#handle = handle;
+        this.#engine = new McpEngine(name, this);
+        this.#writer = handle.stdin.getWriter();
+        this.#read = this.#readStdout(name);
+        void handle.exited.then(({ code, signal }) => {
+            this.#die(new Error(`mcp service exited (code ${code ?? "?"}, signal ${signal ?? "?"})`));
+        });
+    }
+    get engine() {
+        return this.#engine;
+    }
+    async #readStdout(name) {
+        const reader = this.#handle.stdout.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        try {
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done)
+                    break;
+                buffer += decoder.decode(value, { stream: true });
+                for (;;) {
+                    const newline = buffer.indexOf("\n");
+                    if (newline < 0)
+                        break;
+                    const line = buffer.slice(0, newline).trim();
+                    buffer = buffer.slice(newline + 1);
+                    if (line === "")
+                        continue;
+                    try {
+                        this.#engine.handleFrame(JSON.parse(line));
+                    }
+                    catch {
+                        // A non-JSON line is server chatter, not a protocol frame.
+                    }
+                }
+            }
+            if (!this.#closed) {
+                this.#die(new Error(`mcp service "${name}" stdout ended`));
+            }
+        }
+        catch (cause) {
+            if (!this.#closed) {
+                this.#die(cause instanceof Error
+                    ? cause
+                    : new Error(`mcp service "${name}" stream failed`));
+            }
+        }
+        finally {
+            reader.releaseLock();
+        }
+    }
+    #die(error) {
+        if (this.#closed)
+            return;
+        this.#closed = true;
+        this.#engine.handleDeath(error);
+        this.#release();
+    }
+    #release() {
+        if (this.#released)
+            return;
+        this.#released = true;
+        this.#handle.release();
+    }
+    send(frame) {
+        if (this.#closed) {
+            return Promise.reject(new Error("mcp service transport is closed"));
+        }
+        return this.#writer.write(new TextEncoder().encode(JSON.stringify(frame) + "\n"));
+    }
+    close() {
+        if (this.#closed)
+            return;
+        this.#closed = true;
+        void this.#writer.close().catch((cause) => {
+            console.warn(`mcp service stdin close failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+        });
+        this.#engine.handleDeath(new Error("mcp client closed"));
+        this.#release();
     }
 }
 // ---------------------------------------------------------------------------
@@ -659,9 +748,17 @@ class HttpTransport {
  * per-server isolation is the CALLER's policy (the extension connects all
  * servers with `.catch` per server).
  */
-export async function connectMcpServer(name, config) {
+export async function connectMcpServer(name, config, handle) {
     let engine;
-    if ("url" in config) {
+    if (handle !== undefined) {
+        if (!("command" in config)) {
+            handle.release();
+            throw new Error(`mcp server "${name}" remote transport cannot use a service handle`);
+        }
+        const transport = new HandleTransport(name, handle);
+        engine = transport.engine;
+    }
+    else if ("url" in config) {
         const transport = new HttpTransport(name, config);
         engine = transport.engine;
     }
