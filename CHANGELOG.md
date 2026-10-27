@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Security
+- **stdio MCP servers receive an allowlisted environment instead of sigrun's
+  process environment.** `SIGRUN_API_TOKEN` and provider keys were inherited
+  by every spawned stdio server; they now see only the variables their
+  declaration names plus a minimal base. Previously published `0.2.0` is
+  affected; `0.2.1` is the first release with the fix.
+
 ### Changed
 - **Upgrade behavior:** catalog servers now default to `credentials: "user"`.
   Existing installs that rely on one system-wide server must explicitly
