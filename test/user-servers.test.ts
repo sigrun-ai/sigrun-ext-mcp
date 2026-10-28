@@ -12,6 +12,7 @@ import {
 import { createCatalogHost } from "./catalog-host.js";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { validateTree } from "@sigrun/sigrun/blocks";
+import { assertFreshCoreBlocks } from "./core-blocks-freshness.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -196,6 +197,7 @@ describe("user-supplied MCP server lifecycle", () => {
 	});
 
 	it("passes the contributed form through core's real settings validator", () => {
+		assertFreshCoreBlocks();
 		const double = createCatalogHost();
 		cleanups.push(() => double.close());
 		const catalog = createUserCatalog(double.host, {}, "remote");

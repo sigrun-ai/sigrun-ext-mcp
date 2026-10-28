@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- Block-validator tests now compile against core's real generated
+  `@sigrun/sigrun/blocks` declarations instead of a local ambient shim.
+  A content-hash build stamp rejects missing or stale sibling output with
+  an explicit core rebuild instruction; the sibling CI path builds core
+  before the validator-form test.
+
 ### Security
 - **stdio MCP servers receive an allowlisted environment instead of sigrun's
   process environment.** `SIGRUN_API_TOKEN` and provider keys were inherited
