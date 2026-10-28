@@ -144,6 +144,13 @@ export function parseMcpConfig(text, source) {
         if (name.startsWith("u_")) {
             throw new Error(`mcp config ${source}: server "${name}" uses the reserved "u_" prefix`);
         }
+        // The tool namespace is `<server>/<tool>` and settings keys use dots
+        // for paths, so a server named `acme.tools` or `acme/tools` would
+        // produce ambiguous or conflicting keys. Reject at the source, before
+        // any settings section can be generated from the bad name.
+        if (name.includes(".") || name.includes("/")) {
+            throw new Error(`mcp config ${source}: server "${name}" contains forbidden characters ("." or "/") — dots conflict with settings key paths and slashes conflict with the <server>/<tool> namespace`);
+        }
         if (!isRecord(entry)) {
             throw new Error(`mcp config ${source}: server "${name}" must be an object`);
         }
