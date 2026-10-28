@@ -73,12 +73,17 @@ export async function openMcpHarness(
 		const parsed = JSON.parse(
 			await readFile(stubConfigPath(dir), "utf8"),
 		) as { servers: Record<string, unknown> };
-		double.setSettings("alice", {
-			catalog: Object.fromEntries(
-				Object.keys(parsed.servers).map((name) => [name, true]),
-			),
-		});
+		// Production reads the flat availability form: settings[serverName]
+		// (see catalogEnabledFromSettings). The old nested {catalog: {...}}
+		// seed was dead — nothing reads it.
+		double.setSettings("alice", Object.fromEntries(
+			Object.keys(parsed.servers).map((name) => [name, true]),
+		));
 		wiring = createMcpExtension(double.host);
+		// Mirror the core loader: the factory result's perUserTools field is
+		// the declaration signal. createUserCatalog returns perUserTools: true;
+		// the loader (or this double) must read it and declare. This is NOT
+		// unconditional masking — it is the same conditional the loader uses.
 		if (wiring.perUserTools) double.declarePerUserTools();
 	} finally {
 		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];

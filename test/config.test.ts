@@ -117,6 +117,31 @@ test("shared credentials require a non-empty authority naming the server", () =>
 	}
 });
 
+test("server names containing dots or slashes are rejected at parse time", () => {
+	// The tool namespace is `<server>/<tool>` and settings keys use dots
+	// for paths, so `acme.tools` or `acme/tools` would produce ambiguous or
+	// conflicting keys. Rejection must happen in the parser — before any
+	// settings section can be generated from the bad name.
+	for (const name of ["acme.tools", "acme/tools"]) {
+		expect(() =>
+			parseMcpConfig(
+				JSON.stringify({
+					servers: { [name]: { command: "node", args: [] } },
+				}),
+				"/x/mcp.json",
+			),
+		).toThrow(new RegExp(`server "${name.replace(/[./]/g, "\\$&")}".*[./]`));
+		expect(() =>
+			parseMcpConfig(
+				JSON.stringify({
+					servers: { [name]: { command: "node", args: [] } },
+				}),
+				"/x/mcp.json",
+			),
+		).toThrow(/forbidden.*[./]|[./].*forbidden/);
+	}
+});
+
 test("the reserved catalog prefix and per-user users list are config errors", () => {
 	expect(() =>
 		parseMcpConfig(

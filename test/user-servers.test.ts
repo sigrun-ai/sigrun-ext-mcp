@@ -80,6 +80,27 @@ describe("user-supplied MCP server configuration", () => {
 });
 
 describe("user-supplied MCP server lifecycle", () => {
+	it("declares per-user tools through the factory result, not the test double", async () => {
+		// The production declaration chain is: createUserCatalog returns
+		// perUserTools: true → createMcpExtension exposes it as
+		// wiring.perUserTools → the core loader declares the slug.
+		// The test double mirrors the loader; if createUserCatalog ever
+		// stops returning perUserTools: true, this test must fail.
+		const double = createCatalogHost();
+		cleanups.push(() => double.close());
+		const catalog = createUserCatalog(double.host, {}, "remote");
+		cleanups.push(() => catalog.close());
+		expect(catalog.perUserTools).toBe(true);
+		// The double starts undeclared; only the wiring's perUserTools field
+		// (mirrored by the harness) may declare it. Direct setUserTools
+		// without declaration must throw — proving the double discriminates.
+		expect(() => double.host.tools.setUserTools("alice", [])).toThrow(
+			/perUserTools not declared/,
+		);
+		double.declarePerUserTools();
+		expect(() => double.host.tools.setUserTools("alice", [])).not.toThrow();
+	});
+
 	it("balances its process exit listener across factory and close", async () => {
 		const before = process.listenerCount("exit");
 		const double = createCatalogHost();
@@ -260,6 +281,55 @@ describe("user-supplied MCP server lifecycle", () => {
 		);
 		expect(result).toMatchObject({ isError: true });
 		expect(remote.connections()).toBe(before);
+	});
+
+	it("a rejected reconcileAll does not poison later reconciliation", async () => {
+		// Characterization test: the code already retains a settled recovery
+		// point via policyRefresh = chain.catch(() => undefined). This test
+		// proves that a forced reconcileAll rejection does not prevent a
+		// subsequent reconcileAll from succeeding.
+		const remote = await fakeMcpServer();
+		cleanups.push(remote.close);
+		const double = createCatalogHost();
+		cleanups.push(() => double.close());
+		double.setSettings("alice", settings({ acme: { url: remote.url } }));
+		const catalog = createUserCatalog(double.host, {}, "remote");
+		double.declarePerUserTools();
+		cleanups.push(() => catalog.close());
+
+		// Activate alice first so reconcileAll has a state to iterate.
+		await catalog.activate("alice");
+		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
+
+		// Force a rejection: make settings.get throw once. The double's
+		// stores.user() returns a fresh object each call, so override at the
+		// user-store factory level, not on a single returned object.
+		const realUser = double.host.stores.user;
+		let calls = 0;
+		double.host.stores.user = (user: string) => {
+			const store = realUser(user);
+			if (user !== "alice") return store;
+			return {
+				...store,
+				settings: {
+					...store.settings,
+					get: async () => {
+						calls += 1;
+						if (calls === 1) throw new Error("synthetic settings read failure");
+						return store.settings.get();
+					},
+				},
+			};
+		};
+
+		// First reconcileAll rejects (the settings read failure propagates).
+		await expect(catalog.reconcileAll()).rejects.toThrow(
+			/synthetic settings read failure/,
+		);
+
+		// Second reconcileAll succeeds — the settled recovery point works.
+		await expect(catalog.reconcileAll()).resolves.toBeUndefined();
+		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
 	});
 
 	it("keeps activation working when a policy read is malformed", async () => {
