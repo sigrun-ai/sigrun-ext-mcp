@@ -37,6 +37,7 @@ const SessionMetaDoc = defineDoc<{ owner?: string }>({
 	history: "latest",
 	fork: "current",
 	initial: () => ({}),
+	checkpointWhen: () => false,
 });
 
 /** A minimal model-offered stand-in for a discovery tool (codemode /

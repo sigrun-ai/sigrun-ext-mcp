@@ -19,6 +19,7 @@ const SessionMetaDoc = defineDoc<{ owner?: string }>({
 	history: "latest",
 	fork: "current",
 	initial: () => ({}),
+	checkpointWhen: () => false,
 });
 
 interface OpenedCatalog {

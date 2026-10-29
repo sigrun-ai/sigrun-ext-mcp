@@ -17,6 +17,7 @@ const SessionOwnerDoc = defineDoc({
     history: "latest",
     fork: "current",
     initial: () => ({}),
+    checkpointWhen: () => false,
 });
 function denied(message) {
     return {
