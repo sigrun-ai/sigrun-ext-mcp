@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Changed
+- Forward-compatible with pi-durable 1.4.0 (explicit `checkpointWhen`;
+  widened peer range). No behaviour change.
 - Block-validator tests now compile against core's real generated
   `@sigrun/sigrun/blocks` declarations instead of a local ambient shim.
   A content-hash build stamp rejects missing or stale sibling output with

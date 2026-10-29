@@ -48,6 +48,7 @@ const SessionOwnerDoc = defineDoc<{ owner?: string }>({
 	history: "latest",
 	fork: "current",
 	initial: () => ({}),
+	checkpointWhen: () => false,
 });
 
 export interface ExtensionRouteContribution {
