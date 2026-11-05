@@ -34,8 +34,11 @@ import {
 	type OwnerEvent,
 	type ServerExposure,
 	type SigrunHost,
+	type ToolAnnotationEntry,
 	type UserService,
 } from "./user-servers.js";
+import { createToolAnnotationsHook } from "./annotations.js";
+import type { PublishedHook } from "@sigrun/sigrun/extension";
 
 export const MCP_EXTENSION_NAME = "sigrun.mcp";
 
@@ -67,6 +70,7 @@ export interface McpWiring {
 	readonly routes: readonly ExtensionRouteContribution[];
 	readonly userServices: readonly UserService[];
 	readonly surfaces: { readonly settings: readonly CatalogSettingsSection[] };
+	readonly publishedHooks: readonly PublishedHook[];
 	conversationCreated(event: OwnerEvent): Promise<void>;
 	runSettled(event: OwnerEvent): Promise<void>;
 	onSettingsChanged(keys: readonly string[], user?: string): Promise<void>;
@@ -125,6 +129,10 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 	const shared = Object.entries(config.servers).filter(
 		([, server]) => server.credentials === "shared" && serverEnabled(server),
 	);
+	const sharedAnnotations = new Map<string, {
+		readonly server: (typeof shared)[number][1];
+		readonly annotations: ReadonlyMap<string, ToolAnnotationEntry>;
+	}>();
 	const catalog = createUserCatalog(host, config.servers, config.userServers ?? "none");
 	const oauthFlows = createUserOauthFlows();
 	let closed = false;
@@ -191,11 +199,16 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 					tools.push(
 						...discovered.tools.map((tool) => sharedTool(host, name, server, tool)),
 					);
+					sharedAnnotations.set(name, {
+						server,
+						annotations: discovered.annotations,
+					});
 					if (discovered.exposure !== undefined) {
 						serverExposures.set(name, discovered.exposure);
 					}
 				} catch (cause) {
 					clients.delete(name);
+					sharedAnnotations.delete(name);
 					client.close();
 					console.warn(
 						`mcp server "${name}" quarantined during discovery: ${errorMessage(cause)}`,
@@ -320,6 +333,7 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 		clients.clear();
 		tools.length = 0;
 		serverExposures.clear();
+		sharedAnnotations.clear();
 		await Promise.all(pending);
 		oauthFlows.clear();
 		catalog.close();
@@ -408,6 +422,7 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 		routes,
 		userServices: catalog.userServices,
 		surfaces: { settings: catalog.settings },
+		publishedHooks: [createToolAnnotationsHook(host, catalog, sharedAnnotations)],
 		conversationCreated: activate,
 		runSettled: activate,
 		onSettingsChanged: async (keys, user) => {

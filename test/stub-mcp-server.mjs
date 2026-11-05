@@ -51,6 +51,42 @@ if (process.env.STUB_ENV_TOOL === "1") {
 		},
 	});
 }
+if (process.env.STUB_ANNOTATIONS === "1") {
+	// Annotated variants let the annotations tests drive the hook's lookup
+	// through a REAL server rather than a discovery double.
+	TOOLS.push(
+		{
+			name: "torrents_list",
+			description: "List torrents.",
+			inputSchema: { type: "object" },
+			annotations: { readOnlyHint: true, destructiveHint: false },
+		},
+		{
+			name: "torrents_add",
+			description: "Add a torrent.",
+			inputSchema: {
+				type: "object",
+				properties: { magnet: { type: "string" } },
+				required: ["magnet"],
+			},
+			annotations: {
+				readOnlyHint: false,
+				destructiveHint: false,
+				idempotentHint: true,
+			},
+		},
+		{
+			name: "torrents_remove",
+			description: "Remove a torrent.",
+			inputSchema: {
+				type: "object",
+				properties: { hash: { type: "string" } },
+				required: ["hash"],
+			},
+			annotations: { readOnlyHint: false, destructiveHint: true },
+		},
+	);
+}
 
 const lines = createInterface({ input: process.stdin });
 lines.on("line", (line) => {

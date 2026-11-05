@@ -25,6 +25,7 @@ import {
 import type {
 	McpContentBlock,
 	McpToolResult,
+	ToolAnnotations,
 } from "./types.js";
 
 export interface HandlerContext {
@@ -84,9 +85,36 @@ export interface ServerExposure {
 	readonly description: string;
 	readonly count: number;
 }
+/** One discovered tool's annotation record, keyed by the sigrun tool name. */
+export interface ToolAnnotationEntry {
+	readonly server: string;
+	readonly mcpName: string;
+	readonly annotations: ToolAnnotations;
+}
 export interface DiscoveredTools {
 	readonly tools: ToolRegistration[];
 	readonly exposure: ServerExposure | undefined;
+	/** Annotations keyed by the sigrun tool name (`<server>/<tool>`); only
+	 * tools that advertised at least one boolean hint appear. */
+	readonly annotations: ReadonlyMap<string, ToolAnnotationEntry>;
+}
+
+/** Copy only the four boolean hint values; anything else is untrusted noise. */
+function keepBooleanAnnotations(
+	annotations: { readonly [key: string]: unknown } | undefined,
+): ToolAnnotations | undefined {
+	if (annotations === undefined) return undefined;
+	const kept: Record<string, boolean> = {};
+	for (const hint of [
+		"readOnlyHint",
+		"destructiveHint",
+		"idempotentHint",
+		"openWorldHint",
+	] as const) {
+		const value = annotations[hint];
+		if (typeof value === "boolean") kept[hint] = value;
+	}
+	return Object.keys(kept).length > 0 ? kept : undefined;
 }
 
 function toContent(block: McpContentBlock): { type: "text"; text: string } {
@@ -103,10 +131,19 @@ export async function discoverMcpTools(
 ): Promise<DiscoveredTools> {
 	const discovered = await client.listTools();
 	const tools: ToolRegistration[] = [];
+	const annotations = new Map<string, ToolAnnotationEntry>();
 	const mix = { codemode: false, deferred: false, count: 0 };
 	for (const tool of discovered) {
 		const exposure = resolveToolExposure(server, tool.name);
 		if (exposure === "hidden") continue;
+		const kept = keepBooleanAnnotations(tool.annotations);
+		if (kept !== undefined) {
+			annotations.set(`${name}/${tool.name}`, {
+				server: name,
+				mcpName: tool.name,
+				annotations: kept,
+			});
+		}
 		if (exposure === "codemode") mix.codemode = true;
 		if (exposure === "deferred") mix.deferred = true;
 		mix.count += 1;
@@ -158,7 +195,7 @@ export async function discoverMcpTools(
 		);
 	}
 	if (mix.count === 0 || (!mix.codemode && !mix.deferred)) {
-		return { tools, exposure: undefined };
+		return { tools, exposure: undefined, annotations };
 	}
 	const origin = isStdioServer(server)
 		? `${server.command} ${server.args.join(" ")}`.trim()
@@ -169,6 +206,7 @@ export async function discoverMcpTools(
 			...mix,
 			description: `${mix.count} tool${mix.count === 1 ? "" : "s"} from ${origin}`,
 		},
+		annotations,
 	};
 }
 
@@ -217,6 +255,7 @@ export async function sharedServerAllowed(
 interface CatalogConnection {
 	readonly registrations: ToolRegistration[];
 	readonly exposure: ServerExposure | undefined;
+	readonly annotations: ReadonlyMap<string, ToolAnnotationEntry>;
 	retire(): void;
 	revive(): void;
 	close(): void;
@@ -257,6 +296,7 @@ function trackConnection(
 	return {
 		registrations,
 		exposure: discovered.exposure,
+		annotations: discovered.annotations,
 		retire: () => {
 			retired = true;
 			drain();
@@ -292,6 +332,9 @@ export interface UserCatalog {
 	activate(user: string, ctx?: HandlerContext): Promise<void>;
 	retire(user: string, server: string): Promise<void>;
 	exposures(user: string): ReadonlyMap<string, ServerExposure>;
+	/** Live annotation maps for this user's current connections; retirement
+	 * removes entries because the underlying connections map is the source. */
+	annotationsFor(user: string): ReadonlyMap<string, ToolAnnotationEntry>;
 	reconcileAll(mode?: UserServersMode): Promise<void>;
 	close(): void;
 }
@@ -591,6 +634,11 @@ export function createUserCatalog(
 		exposures: (user) => new Map(
 			[...(states.get(user)?.connections ?? [])].flatMap(([name, connection]) =>
 				connection.exposure === undefined ? [] : [[name, connection.exposure]],
+			),
+		),
+		annotationsFor: (user) => new Map(
+			[...(states.get(user)?.connections ?? [])].flatMap(([, connection]) =>
+				[...connection.annotations],
 			),
 		),
 		close: () => {

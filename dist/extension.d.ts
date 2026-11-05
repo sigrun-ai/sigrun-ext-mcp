@@ -2,6 +2,7 @@
  * per-user entries connect and publish through the structural sigrun host. */
 import { type Extension } from "@earendil-works/pi-durable";
 import { type CatalogSettingsSection, type OwnerEvent, type SigrunHost, type UserService } from "./user-servers.js";
+import type { PublishedHook } from "@sigrun/sigrun/extension";
 export declare const MCP_EXTENSION_NAME = "sigrun.mcp";
 export interface ExtensionRouteContribution {
     readonly method: "POST";
@@ -22,6 +23,7 @@ export interface McpWiring {
     readonly surfaces: {
         readonly settings: readonly CatalogSettingsSection[];
     };
+    readonly publishedHooks: readonly PublishedHook[];
     conversationCreated(event: OwnerEvent): Promise<void>;
     runSettled(event: OwnerEvent): Promise<void>;
     onSettingsChanged(keys: readonly string[], user?: string): Promise<void>;

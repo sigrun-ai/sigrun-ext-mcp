@@ -4,6 +4,7 @@
 import { type ConversationId, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type McpClient, type McpServiceHandle } from "./client.js";
 import { type McpServerConfig, type UserServersMode } from "./config.js";
+import type { ToolAnnotations } from "./types.js";
 export interface HandlerContext {
     readonly abortSignal: AbortSignal | undefined;
 }
@@ -61,9 +62,18 @@ export interface ServerExposure {
     readonly description: string;
     readonly count: number;
 }
+/** One discovered tool's annotation record, keyed by the sigrun tool name. */
+export interface ToolAnnotationEntry {
+    readonly server: string;
+    readonly mcpName: string;
+    readonly annotations: ToolAnnotations;
+}
 export interface DiscoveredTools {
     readonly tools: ToolRegistration[];
     readonly exposure: ServerExposure | undefined;
+    /** Annotations keyed by the sigrun tool name (`<server>/<tool>`); only
+     * tools that advertised at least one boolean hint appear. */
+    readonly annotations: ReadonlyMap<string, ToolAnnotationEntry>;
 }
 /** The one discovery-to-registration mapping shared by system and user tools. */
 export declare function discoverMcpTools(name: string, server: McpServerConfig, client: McpClient): Promise<DiscoveredTools>;
@@ -86,6 +96,9 @@ export interface UserCatalog {
     activate(user: string, ctx?: HandlerContext): Promise<void>;
     retire(user: string, server: string): Promise<void>;
     exposures(user: string): ReadonlyMap<string, ServerExposure>;
+    /** Live annotation maps for this user's current connections; retirement
+     * removes entries because the underlying connections map is the source. */
+    annotationsFor(user: string): ReadonlyMap<string, ToolAnnotationEntry>;
     reconcileAll(mode?: UserServersMode): Promise<void>;
     close(): void;
 }

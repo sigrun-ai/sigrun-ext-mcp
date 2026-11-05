@@ -5,6 +5,23 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, } from "@earendil-works/pi-durable";
 import { connectMcpServer, } from "./client.js";
 import { isStdioServer, parseMcpConfig, resolveToolExposure, serverEnabled, } from "./config.js";
+/** Copy only the four boolean hint values; anything else is untrusted noise. */
+function keepBooleanAnnotations(annotations) {
+    if (annotations === undefined)
+        return undefined;
+    const kept = {};
+    for (const hint of [
+        "readOnlyHint",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+    ]) {
+        const value = annotations[hint];
+        if (typeof value === "boolean")
+            kept[hint] = value;
+    }
+    return Object.keys(kept).length > 0 ? kept : undefined;
+}
 function toContent(block) {
     return block.type === "text" && typeof block.text === "string"
         ? { type: "text", text: block.text }
@@ -14,11 +31,20 @@ function toContent(block) {
 export async function discoverMcpTools(name, server, client) {
     const discovered = await client.listTools();
     const tools = [];
+    const annotations = new Map();
     const mix = { codemode: false, deferred: false, count: 0 };
     for (const tool of discovered) {
         const exposure = resolveToolExposure(server, tool.name);
         if (exposure === "hidden")
             continue;
+        const kept = keepBooleanAnnotations(tool.annotations);
+        if (kept !== undefined) {
+            annotations.set(`${name}/${tool.name}`, {
+                server: name,
+                mcpName: tool.name,
+                annotations: kept,
+            });
+        }
         if (exposure === "codemode")
             mix.codemode = true;
         if (exposure === "deferred")
@@ -61,7 +87,7 @@ export async function discoverMcpTools(name, server, client) {
         }));
     }
     if (mix.count === 0 || (!mix.codemode && !mix.deferred)) {
-        return { tools, exposure: undefined };
+        return { tools, exposure: undefined, annotations };
     }
     const origin = isStdioServer(server)
         ? `${server.command} ${server.args.join(" ")}`.trim()
@@ -72,6 +98,7 @@ export async function discoverMcpTools(name, server, client) {
             ...mix,
             description: `${mix.count} tool${mix.count === 1 ? "" : "s"} from ${origin}`,
         },
+        annotations,
     };
 }
 export function catalogEnabledFromSettings(name, server, settings) {
@@ -132,6 +159,7 @@ function trackConnection(name, client, discovered) {
     return {
         registrations,
         exposure: discovered.exposure,
+        annotations: discovered.annotations,
         retire: () => {
             retired = true;
             drain();
@@ -407,6 +435,7 @@ export function createUserCatalog(host, servers, initialMode = "none") {
         retire,
         reconcileAll,
         exposures: (user) => new Map([...(states.get(user)?.connections ?? [])].flatMap(([name, connection]) => connection.exposure === undefined ? [] : [[name, connection.exposure]])),
+        annotationsFor: (user) => new Map([...(states.get(user)?.connections ?? [])].flatMap(([, connection]) => [...connection.annotations])),
         close: () => {
             if (closed)
                 return;
