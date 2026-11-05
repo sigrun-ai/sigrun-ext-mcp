@@ -85,6 +85,14 @@ if (process.env.STUB_ANNOTATIONS === "1") {
 			},
 			annotations: { readOnlyHint: false, destructiveHint: true },
 		},
+		{
+			// Every hint here is a non-boolean, so discovery keeps none of
+			// them and the hook must answer {unknown:true} for the tool.
+			name: "torrents_probe",
+			description: "Probe a torrent.",
+			inputSchema: { type: "object" },
+			annotations: { idempotentHint: "yes" },
+		},
 	);
 }
 

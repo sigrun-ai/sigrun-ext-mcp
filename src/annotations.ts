@@ -1,4 +1,4 @@
-/** The `mcp.toolAnnotations` published hook: a downstream safety extension
+/** The `mcp.tool-annotations` published hook: a downstream safety extension
  * asks "what did this tool's server declare about it?" and this extension
  * answers from its live connection maps — the caller's per-user catalog
  * first, then shared servers the caller may reach, else unknown. */
@@ -33,12 +33,18 @@ const Output = Type.Union([
 	Type.Object({ unknown: Type.Literal(true) }),
 ]);
 
+// Exported for the compile round-trip test (the hook exposes the same
+// schemas via `input`/`output`; test code imports these constants to
+// avoid re-deriving them from the wiring).
+export const TOOL_ANNOTATIONS_INPUT = Input;
+export const TOOL_ANNOTATIONS_OUTPUT = Output;
+
 export type ToolAnnotationsPayload = Static<typeof Input>;
 export type ToolAnnotationsResult =
 	| ToolAnnotationEntry
 	| { readonly unknown: true };
 
-export const TOOL_ANNOTATIONS_HOOK = "mcp.toolAnnotations";
+export const TOOL_ANNOTATIONS_HOOK = "mcp.tool-annotations";
 
 export function createToolAnnotationsHook(
 	host: SigrunHost,

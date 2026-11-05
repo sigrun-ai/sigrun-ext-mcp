@@ -1,4 +1,4 @@
-/** Annotation retention + the published `mcp.toolAnnotations` hook:
+/** Annotation retention + the published `mcp.tool-annotations` hook:
  * discovery copies only boolean hint values, and the hook resolves a sigrun
  * tool name against the caller's reachable servers (own catalog first, then
  * gated shared servers, else unknown). */
@@ -8,6 +8,11 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { Compile } from "typebox/compile";
+import {
+	TOOL_ANNOTATIONS_INPUT,
+	TOOL_ANNOTATIONS_OUTPUT,
+} from "../src/annotations.js";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { PublishedHook } from "@sigrun/sigrun/extension";
 import { createMcpExtension, type McpWiring } from "../src/extension.js";
@@ -51,6 +56,11 @@ test("discoverMcpTools keeps boolean annotations and drops non-boolean ones", as
 				openWorldHint: 1,
 			},
 		},
+		{
+			name: "probeless",
+			description: "Nothing boolean to keep.",
+			annotations: { idempotentHint: "yes", openWorldHint: "no" },
+		},
 	]);
 	const discovered = await discoverMcpTools(
 		"acme-media",
@@ -64,7 +74,79 @@ test("discoverMcpTools keeps boolean annotations and drops non-boolean ones", as
 	});
 	expect(discovered.tools.map((tool) => tool.name)).toEqual([
 		"acme-media/probe",
+		"acme-media/probeless",
 	]);
+});
+
+test("a tool whose annotations are all non-boolean produces no map entry", async () => {
+	const discovered = await discoverMcpTools(
+		"acme-media",
+		{ ...STDIO_SERVER },
+		fakeClient([
+			{
+				name: "quiet",
+				description: "Only a non-boolean hint.",
+				annotations: { idempotentHint: "yes" },
+			},
+		]),
+	);
+	expect(discovered.annotations.has("acme-media/quiet")).toBe(false);
+	expect(discovered.tools.map((tool) => tool.name)).toEqual([
+		"acme-media/quiet",
+	]);
+	// Through the hook the tool exists (the stub advertises it) but with no
+	// kept hints the answer is {unknown:true}.
+	const opened = await openHook({
+		servers: {
+			"acme-media": {
+				...STDIO_SERVER,
+				env: { STUB_ANNOTATIONS: "1" },
+				credentials: "shared",
+				sharedAuthority: "Synthetic shared test authority",
+			},
+		},
+	});
+	try {
+		await opened.wiring.ready;
+		const conversationId = conv(5);
+		opened.double.actingUsers.set(conversationId, "alice");
+		expect(
+			await callHook(opened.hook, "acme-media/torrents_probe", {
+				user: "alice",
+				conversationId,
+			}),
+		).toEqual({ unknown: true });
+		// Sanity: a hinted sibling from the same server still resolves.
+		expect(
+			await callHook(opened.hook, "acme-media/torrents_remove", {
+				user: "alice",
+				conversationId,
+			}),
+		).toEqual({
+			server: "acme-media",
+			mcpName: "torrents_remove",
+			annotations: { readOnlyHint: false, destructiveHint: true },
+		});
+	} finally {
+		await opened.close();
+	}
+});
+
+test("the hook's declared input and output schemas compile and validate the wire shapes", () => {
+	// Compile the same way core's registry does; proves the schemas are
+	// compilable and that the three wire shapes the hook speaks check.
+	const input = Compile(TOOL_ANNOTATIONS_INPUT);
+	expect(input.Check({ tool: "acme-media/torrents_remove" })).toBe(true);
+	expect(input.Check({})).toBe(false);
+	const output = Compile(TOOL_ANNOTATIONS_OUTPUT);
+	expect(
+		output.Check({
+			server: "acme-media",
+			mcpName: "torrents_remove",
+			annotations: { destructiveHint: true },
+		}),
+	).toBe(true);
+	expect(output.Check({ unknown: true })).toBe(true);
 });
 
 interface OpenedHook {
@@ -92,9 +174,9 @@ async function openHook(
 	if (wiring.perUserTools) double.declarePerUserTools();
 	double.registerServices(wiring.userServices);
 	const hook = wiring.publishedHooks.find(
-		(candidate) => candidate.name === "mcp.toolAnnotations",
+		(candidate) => candidate.name === "mcp.tool-annotations",
 	);
-	if (hook === undefined) throw new Error("missing mcp.toolAnnotations hook");
+	if (hook === undefined) throw new Error("missing mcp.tool-annotations hook");
 	return {
 		wiring,
 		double,
@@ -123,7 +205,22 @@ function callHook(
 	);
 }
 
-test("mcp.toolAnnotations answers acme-media/torrents_remove with destructiveHint true and mcpName torrents_remove", async () => {
+test("the published hook name satisfies core's published-hook grammar", async () => {
+	const opened = await openHook({ servers: {} });
+	try {
+		// Core's loader quarantines an extension whose published-hook name
+		// is not lowercase dotted segments; mirror that grammar here so a
+		// rename regression fails in THIS suite, not at load time.
+		expect(opened.wiring.publishedHooks.length).toBeGreaterThan(0);
+		for (const hook of opened.wiring.publishedHooks) {
+			expect(hook.name).toMatch(/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/);
+		}
+	} finally {
+		await opened.close();
+	}
+});
+
+test("mcp.tool-annotations answers acme-media/torrents_remove with destructiveHint true and mcpName torrents_remove", async () => {
 	const opened = await openHook({
 		servers: {
 			"acme-media": {
