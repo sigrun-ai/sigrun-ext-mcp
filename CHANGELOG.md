@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+
+- peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.10.0).
+
 ## [0.2.3] - 2026-11-05
 
 ### Added
