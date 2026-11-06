@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.2.3] - 2026-11-05
+
+### Added
+
+- Tool annotations kept from `tools/list` and published as the
+  `mcp.tool-annotations` hook (readOnlyHint/destructiveHint per tool,
+  boolean-only, per-user catalog first then shared servers the calling
+  user may reach; unknown tools answer `{unknown: true}`). Downstream
+  safety consumers (@sigrun/warden) classify from real metadata instead
+  of the MCP default.
+
 ### Changed
 - Forward-compatible with pi-durable 1.4.0 (explicit `checkpointWhen`;
   widened peer range). No behaviour change.
