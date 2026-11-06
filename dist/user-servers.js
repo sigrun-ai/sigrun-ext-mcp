@@ -1,7 +1,7 @@
 /** Per-user catalog lifecycle and the structural sigrun host contract.
  * This package mirrors the host types instead of depending on sigrun, so it
  * remains independently buildable and installable. */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool, } from "@earendil-works/pi-durable";
 import { connectMcpServer, } from "./client.js";
 import { isStdioServer, parseMcpConfig, resolveToolExposure, serverEnabled, } from "./config.js";
