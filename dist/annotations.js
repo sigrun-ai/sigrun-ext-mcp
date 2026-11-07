@@ -2,7 +2,7 @@
  * asks "what did this tool's server declare about it?" and this extension
  * answers from its live connection maps — the caller's per-user catalog
  * first, then shared servers the caller may reach, else unknown. */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { sharedServerAllowed, } from "./user-servers.js";
 const Input = Type.Object({
     tool: Type.String({ minLength: 1, maxLength: 512 }),
