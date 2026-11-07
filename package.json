@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/ext-mcp",
-	"version": "0.2.3",
+	"version": "0.2.4",
 	"description": "MCP extension for sigrun (pi-durable): registers MCP server tools as <server>/<toolname> tools",
 	"type": "module",
 	"engines": {
