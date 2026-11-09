@@ -688,10 +688,14 @@ export function parseMcpSettings(
 				// default fill, not a stdio transport signal; drop it before the
 				// legacy parser's command-or-args dispatch. An explicit command
 				// alongside url still fails the both-transports rule.
-				if (normalized.url !== undefined && normalized.command === undefined) {
-					delete normalized.args;
-				}
 				const { transport: _transport, ...rest } = normalized;
+				// Mutate the COPY (rest), never the checked-read document
+				// (normalizeServerAliases returns the SAME reference when no
+				// alias applied — a delete on it writes through to the
+				// caller's settings object).
+				if (rest.url !== undefined && rest.command === undefined) {
+					delete rest.args;
+				}
 				return [name, rest];
 			}),
 		);
