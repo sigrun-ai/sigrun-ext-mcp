@@ -1,7 +1,7 @@
 /** Catalog wiring: shared operator services remain system children, while
  * per-user entries connect and publish through the structural sigrun host. */
 import { type Extension } from "@earendil-works/pi-durable";
-import { type CatalogSettingsSection, type OwnerEvent, type SigrunHost, type UserService } from "./user-servers.js";
+import { type OwnerEvent, type SigrunHost, type UserService } from "./user-servers.js";
 import type { PublishedHook } from "@sigrun/sigrun/extension";
 export declare const MCP_EXTENSION_NAME = "sigrun.mcp";
 export interface ExtensionRouteContribution {
@@ -20,9 +20,6 @@ export interface McpWiring {
     readonly perUserTools: boolean;
     readonly routes: readonly ExtensionRouteContribution[];
     readonly userServices: readonly UserService[];
-    readonly surfaces: {
-        readonly settings: readonly CatalogSettingsSection[];
-    };
     readonly publishedHooks: readonly PublishedHook[];
     conversationCreated(event: OwnerEvent): Promise<void>;
     runSettled(event: OwnerEvent): Promise<void>;

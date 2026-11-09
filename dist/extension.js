@@ -326,7 +326,6 @@ export function createMcpExtension(host) {
         perUserTools: catalog.perUserTools,
         routes,
         userServices: catalog.userServices,
-        surfaces: { settings: catalog.settings },
         publishedHooks: [createToolAnnotationsHook(host, catalog, sharedAnnotations)],
         conversationCreated: activate,
         runSettled: activate,

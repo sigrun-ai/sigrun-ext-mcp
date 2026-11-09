@@ -30,7 +30,6 @@ import {
 	createUserCatalog,
 	sharedServerAllowed,
 	discoverMcpTools,
-	type CatalogSettingsSection,
 	type OwnerEvent,
 	type ServerExposure,
 	type SigrunHost,
@@ -69,7 +68,6 @@ export interface McpWiring {
 	readonly perUserTools: boolean;
 	readonly routes: readonly ExtensionRouteContribution[];
 	readonly userServices: readonly UserService[];
-	readonly surfaces: { readonly settings: readonly CatalogSettingsSection[] };
 	readonly publishedHooks: readonly PublishedHook[];
 	conversationCreated(event: OwnerEvent): Promise<void>;
 	runSettled(event: OwnerEvent): Promise<void>;
@@ -421,7 +419,6 @@ export function createMcpExtension(host: SigrunHost): McpWiring {
 		perUserTools: catalog.perUserTools,
 		routes,
 		userServices: catalog.userServices,
-		surfaces: { settings: catalog.settings },
 		publishedHooks: [createToolAnnotationsHook(host, catalog, sharedAnnotations)],
 		conversationCreated: activate,
 		runSettled: activate,

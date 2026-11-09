@@ -375,38 +375,3 @@ test("a failed per-user connection does not stop another user", async () => {
 		await opened.close();
 	}
 });
-
-test("the settings surface declares flat toggles and shared-authority help", async () => {
-	const opened = await openCatalog({
-		acme: user({ availability: "opt-in" }),
-		shared: shared({ sharedAuthority: "Synthetic shared test authority." }),
-	});
-	try {
-		expect(opened.wiring.surfaces.settings).toHaveLength(1);
-		expect("settingsSections" in opened.wiring).toBe(false);
-		const definition = opened.wiring.surfaces.settings[0];
-		expect(definition.scope).toBe("user");
-		expect(definition.form).toMatchObject({
-			root: {
-				children: [
-					expect.objectContaining({ name: "acme", default: false }),
-					expect.objectContaining({
-						name: "shared",
-						default: true,
-						help: expect.stringContaining("Synthetic shared test authority"),
-					}),
-				],
-			},
-		});
-		const sharedToggle = (definition.form.root.children as { help?: string }[])
-			.find((child) => child.help !== undefined);
-		expect(sharedToggle?.help).toBe(
-			"Synthetic shared test authority. Shared MCP servers hand every permitted user's agent the admin's credential for that service.",
-		);
-		for (const child of definition.form.root.children as { name?: string }[]) {
-			expect(child.name).not.toMatch(/[./]/);
-		}
-	} finally {
-		await opened.close();
-	}
-});
