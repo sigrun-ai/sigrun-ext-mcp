@@ -4,7 +4,6 @@ export type { McpWiring } from "./extension.js";
 export type { SigrunHost, UserService, ServiceSpec } from "./user-servers.js";
 export { connectMcpServer, McpClient } from "./client.js";
 export {
-	loadMcpConfig,
 	MCP_CONFIG_ENV,
 	parseMcpConfig,
 	resolveMcpConfigPath,

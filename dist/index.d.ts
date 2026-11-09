@@ -3,7 +3,7 @@ export { createMcpExtension, MCP_EXTENSION_NAME } from "./extension.js";
 export type { McpWiring } from "./extension.js";
 export type { SigrunHost, UserService, ServiceSpec } from "./user-servers.js";
 export { connectMcpServer, McpClient } from "./client.js";
-export { loadMcpConfig, MCP_CONFIG_ENV, parseMcpConfig, resolveMcpConfigPath, } from "./config.js";
+export { MCP_CONFIG_ENV, parseMcpConfig, resolveMcpConfigPath, } from "./config.js";
 export type { McpConfig, McpOAuthConfig, McpServerConfig, } from "./config.js";
 export { loadMcpTokens, MCP_ACCESS_TOKEN_ENV, parseMcpTokenStore, resolveMcpTokenPath, saveMcpTokens, spawnEnvWithToken, storeMcpToken, } from "./tokens.js";
 export type { McpStoredToken, McpTokenStore } from "./tokens.js";

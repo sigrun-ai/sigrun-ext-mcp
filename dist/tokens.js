@@ -1,7 +1,8 @@
 /**
- * The OAuth token store (ruling 2): a JSON file BESIDE the resolved mcp.json
- * — `<resolved-config-dir>/mcp-tokens.json` — so the `SIGRUN_MCP_CONFIG`
- * override relocates tokens with config (a test / pod override moves both).
+ * The OAuth token store: `<sigrun-config-dir>/mcp-tokens.json`. Stores
+ * from before the settings rework lived beside the resolved mcp.json;
+ * the first read/write renames that legacy file here when no new store
+ * exists yet.
  *
  * Shape (one entry per configured server name):
  *   { "<server-name>": {
@@ -13,14 +14,25 @@
  * existing-but-malformed file is a fail-loud config error (consistent with
  * the config store).
  */
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { resolveSigrunConfigDir } from "./config.js";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync, } from "node:fs";
+import { dirname, join } from "node:path";
+import { resolveMcpConfigPath, resolveSigrunConfigDir } from "./config.js";
 /** Resolve the token-store path for a given environment (in the sigrun
  * config dir — settings rework, Task 11: mcp.json is retired, so tokens
  * live beside the settings files). */
 export function resolveMcpTokenPath(env = process.env) {
     return join(resolveSigrunConfigDir(env), "mcp-tokens.json");
+}
+/** Move the pre-settings-rework store (beside the resolved mcp.json) to
+ * the config-dir location ONCE, on first read/write. An existing new
+ * store wins; otherwise the legacy file is renamed, preserving 0600 and
+ * every token. Same-filesystem config roots make this atomic. */
+function migrateLegacyTokenStore(env) {
+    const target = resolveMcpTokenPath(env);
+    const legacy = join(dirname(resolveMcpConfigPath(env)), "mcp-tokens.json");
+    if (legacy === target || existsSync(target) || !existsSync(legacy))
+        return;
+    renameSync(legacy, target);
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -73,6 +85,7 @@ export function parseMcpTokenStore(text, source) {
 }
 /** Load the token store from beside the resolved config (missing = empty). */
 export function loadMcpTokens(env = process.env) {
+    migrateLegacyTokenStore(env);
     const path = resolveMcpTokenPath(env);
     if (!existsSync(path))
         return {};
@@ -81,6 +94,7 @@ export function loadMcpTokens(env = process.env) {
 /** Persist the store: 0600, beside the resolved config (create-on-write —
  * the config dir is expected to exist since the config file lives there). */
 export function saveMcpTokens(store, env = process.env) {
+    migrateLegacyTokenStore(env);
     const path = resolveMcpTokenPath(env);
     writeFileSync(path, JSON.stringify(store, null, "\t") + "\n", {
         mode: 0o600,

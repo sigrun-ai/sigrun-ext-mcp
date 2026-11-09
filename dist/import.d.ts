@@ -8,8 +8,11 @@
  * `env/<KEY>`), everything else into the settings file, with the legacy
  * spellings normalized (`disabled` → `enabled`, `codemode-deferred` →
  * `codemode`) and the transport discriminator inferred. The file is then
- * never read again; one log line and one primary-admin notice
- * (`key: "mcp.imported"`) record the move.
+ * never read again; one log line records the move. The returned record
+ * carries the notice text for the factory's post-open `ready` path — the
+ * factory window must never call the bridge-delegated `host.users` or
+ * `host.notices` (they wait for the harness, which waits for the loader,
+ * which is awaiting this factory).
  *
  * When settings already have servers and the file exists, the file is
  * ignored with a log line — settings win.
@@ -17,7 +20,8 @@
 /** The import notice's replace key (Task 6 ruling: no kind on the wire). */
 export declare const MCP_IMPORT_NOTICE_KEY = "mcp.imported";
 /** The host surface the import needs (structural — the fake hosts in this
- * repo's tests and core's real seam host both satisfy it). */
+ * repo's tests and core's real seam host both satisfy it). ONLY scoped
+ * settings/secrets file I/O: safe during the factory window. */
 export interface McpImportHost {
     readonly stores: {
         readonly settings: {
@@ -28,29 +32,22 @@ export interface McpImportHost {
             set(key: string, value: string): Promise<void>;
         };
     };
-    readonly users: {
-        list(): Promise<readonly {
-            readonly user: string;
-            readonly admin?: boolean;
-            readonly createdAt?: number;
-        }[]>;
-    };
-    readonly notices: {
-        post(input: {
-            readonly user: string;
-            readonly key?: string;
-            readonly title: string;
-            readonly body?: string;
-        }): Promise<unknown>;
+}
+/** A completed import's post-open notice payload. */
+export interface McpImportResult {
+    readonly count: number;
+    readonly notice?: {
+        readonly title: string;
+        readonly body: string;
     };
 }
 /**
- * Run the import if it applies. Returns the number of imported servers
+ * Run the import if it applies. `count` is the number of imported servers
  * (0 when there was nothing to do). Never throws into the loader: a
  * failed import logs and leaves the settings untouched so the next boot
- * retries.
+ * retries. No bridge-delegated host surface is touched.
  */
 export declare function importMcpJsonIfPresent(host: McpImportHost, options?: {
     readonly env?: NodeJS.ProcessEnv;
     readonly log?: (message: string) => void;
-}): Promise<number>;
+}): Promise<McpImportResult>;

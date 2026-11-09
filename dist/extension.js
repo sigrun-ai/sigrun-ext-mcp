@@ -3,9 +3,9 @@
 import { defineDoc, defineExtension } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { connectMcpServer } from "./client.js";
-import { normalizeMcpSettingsAliases, parseMcpSettings, serverEnabled, } from "./config.js";
+import { normalizeMcpSettingsAliases, parseMcpSettings, DEFAULT_EXPOSURE, serverEnabled, } from "./config.js";
 import { MCP_SETTINGS_JSON_SCHEMA, MCP_USER_JSON_SCHEMA, } from "./settings-schema.js";
-import { importMcpJsonIfPresent } from "./import.js";
+import { importMcpJsonIfPresent, MCP_IMPORT_NOTICE_KEY, } from "./import.js";
 import { createUserOauthFlows, exchangeCode, extractCode, } from "./oauth.js";
 import { storeUserMcpToken } from "./tokens.js";
 import { MCP_SERVERS_SECTION_KEY, partitionForSection, renderMcpServersSection, } from "./section.js";
@@ -67,6 +67,32 @@ async function foldStoredAliases(host) {
         await host.stores.settings.set(folded);
     }
 }
+/** The factory-window config read: raw scoped settings plus the scoped
+ * secrets store, never the declared handle (a configured install is still
+ * provisionally keyed until the loader resolves its final slug). Legacy
+ * aliases fold before parsing; each stored header/env secret replaces its
+ * file placeholder so imported credentials work on the FIRST boot. */
+async function readBootMcpConfig(host) {
+    const stored = normalizeMcpSettingsAliases(structuredClone(await host.stores.settings.get()));
+    const servers = stored.servers;
+    if (typeof servers === "object" && servers !== null && !Array.isArray(servers)) {
+        for (const [name, entry] of Object.entries(servers)) {
+            if (typeof entry !== "object" || entry === null || Array.isArray(entry))
+                continue;
+            for (const field of ["headers", "env"]) {
+                const table = entry[field];
+                if (typeof table !== "object" || table === null || Array.isArray(table))
+                    continue;
+                for (const key of Object.keys(table)) {
+                    const value = await host.stores.secrets.get(`servers/${name}/${field}/${key}`);
+                    if (value !== undefined)
+                        table[key] = value;
+                }
+            }
+        }
+    }
+    return parseMcpSettings(stored, "settings");
+}
 /** Read the operator config LIVE through the factory's declared handle
  * (defaults applied and secrets filled by core's checked read). */
 export async function readMcpConfig(host) {
@@ -95,14 +121,17 @@ export async function createMcpExtension(host) {
     await foldStoredAliases(host);
     const imported = importMcpJsonIfPresent(host).catch((cause) => {
         console.warn(`mcp import failed: ${errorMessage(cause)}`);
-        return 0;
+        return { count: 0 };
     });
-    // The checked read fills secrets from the store, so this object carries
-    // the live header/env values the connections send. Boot connections are
-    // made from this snapshot; later reads (the mcp.servers hook, OAuth
-    // routes, the settings-changed reconciliation) go through readMcpConfig.
-    await imported;
-    const config = await readMcpConfig(host);
+    // Boot stays OFF the declared handle: a configured package is still
+    // provisionally keyed by its package name here, and a factory-time
+    // declared read would fail the loader's final-slug check. Settings and
+    // secrets are plain scoped file I/O, so this read is bridge-free. The
+    // declared checked handle serves the post-boot mcp.servers hook and
+    // OAuth routes; internal reconciliation uses the same bridge-free store
+    // read so a settings-write fan-out never waits on the seam bridge.
+    const importedResult = await imported;
+    const config = await readBootMcpConfig(host);
     const tools = [];
     const clients = new Map();
     const serverExposures = new Map();
@@ -115,12 +144,11 @@ export async function createMcpExtension(host) {
     let policyRefresh = Promise.resolve();
     const refreshPolicy = async () => {
         // The userServers policy is a live settings field: every lifecycle
-        // event re-reads it through the checked settings handle. A transient
-        // malformed stored value keeps the last known-good policy (core's
-        // repair already logged it).
+        // event re-reads the scoped settings + secrets stores. A transient
+        // malformed stored value keeps the last known-good policy.
         let next = liveUserServers;
         try {
-            next = (await readMcpConfig(host)).userServers ?? "none";
+            next = (await readBootMcpConfig(host)).userServers ?? "none";
         }
         catch (cause) {
             console.warn(`mcp policy reload failed; keeping ${liveUserServers}: ${errorMessage(cause)}`);
@@ -174,8 +202,40 @@ export async function createMcpExtension(host) {
             }
         })());
     }
+    // The import's durable legs ran bridge-free in the factory. Its notice
+    // is deferred until a post-open path: `ready` after discovery, or the
+    // first lifecycle activation if the server bridge was not expected yet.
+    // A headless boot without a server has no notice recipient surface.
+    let importNoticePending = importedResult.notice !== undefined;
+    let importNoticeErrorReported = false;
+    const postImportNotice = async () => {
+        if (!importNoticePending)
+            return;
+        try {
+            const admin = (await host.users.list()).find((user) => user.admin === true)?.user;
+            if (admin === undefined) {
+                importNoticePending = false;
+                return;
+            }
+            await host.notices.post({
+                user: admin,
+                key: MCP_IMPORT_NOTICE_KEY,
+                ...importedResult.notice,
+            });
+            importNoticePending = false;
+        }
+        catch (cause) {
+            // Keep it pending: the next activation retries after a bridge
+            // failure. Log once so a headless process does not spam.
+            if (!importNoticeErrorReported) {
+                importNoticeErrorReported = true;
+                console.warn(`mcp import notice failed: ${errorMessage(cause)}`);
+            }
+        }
+    };
     const activate = async (event) => {
         await refreshPolicy();
+        await postImportNotice();
         if (event.owner !== undefined)
             await catalog.activate(event.owner);
     };
@@ -376,25 +436,38 @@ export async function createMcpExtension(host) {
         runSettled: activate,
         onSettingsChanged: async (keys, user) => {
             if (user !== undefined) {
-                const names = new Set([
-                    ...Object.keys(config.servers),
-                    ...Object.keys((await readMcpConfig(host)).servers),
-                ]);
-                if (keys.includes("servers") ||
-                    keys.some((key) => names.has(key) || key.startsWith("servers."))) {
-                    await catalog.activate(user);
+                try {
+                    const names = new Set([
+                        ...Object.keys(config.servers),
+                        ...Object.keys((await readBootMcpConfig(host)).servers),
+                    ]);
+                    if (keys.includes("servers") ||
+                        keys.some((key) => names.has(key) || key.startsWith("servers."))) {
+                        await catalog.activate(user);
+                    }
+                }
+                catch (cause) {
+                    console.warn(`mcp settings reconciliation failed for user "${user}": ${errorMessage(cause)}`);
                 }
                 return;
             }
-            // A shared (operator) settings write: reconcile the userServers
-            // policy and re-activate known users so per-user toggles and
-            // exposure changes take effect without a restart. Boot-time
-            // shared stdio connections are a restart-apply surface.
+            // The fan-out reaches every extension for EVERY scope, with keys
+            // but no source slug. Only MCP's own fields are actionable; a
+            // core or sibling-extension write must not trigger a registry
+            // read/reconcile at all.
+            if (!keys.includes("userServers") &&
+                !keys.some((key) => key === "servers" || key.startsWith("servers."))) {
+                return;
+            }
+            // An MCP operator write: reconcile the live userServers policy.
+            // Known users are re-activated by refreshPolicy ONLY when the
+            // policy value changed; boot-time shared stdio connections remain
+            // a restart-apply surface.
             await refreshPolicy();
         },
         close,
-        imported,
-        ready: Promise.all(pending).then(() => undefined),
+        imported: Promise.resolve(importedResult.count),
+        ready: Promise.all(pending).then(postImportNotice),
     };
 }
 /** The `mcp.servers` published hook (Task 11): codemode asks which MCP
@@ -429,7 +502,7 @@ function createMcpServersHook(host) {
                 servers: Object.entries(config.servers).map(([name, server]) => ({
                     name,
                     enabled: serverEnabled(server),
-                    exposure: server.exposure ?? "codemode",
+                    exposure: server.exposure ?? DEFAULT_EXPOSURE,
                     toolExposure: { ...(server.toolExposure ?? {}) },
                 })),
             };

@@ -672,7 +672,12 @@ export function parseMcpSettings(
 	// Round-trip through the legacy wire parser: it owns every cross-field
 	// rule and error wording. The settings form carries the transport
 	// discriminator; the legacy shape is recovered by dropping it.
-	const raw: Record<string, unknown> = { ...settings };
+	const raw: Record<string, unknown> = {
+		// An absent settings file means an empty registry; the legacy parser's
+		// required servers object applies to an EXISTING mcp.json, not here.
+		servers: {},
+		...settings,
+	};
 	if (isRecord(raw.servers)) {
 		raw.servers = Object.fromEntries(
 			Object.entries(raw.servers).map(([name, entry]) => {

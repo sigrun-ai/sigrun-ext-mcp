@@ -158,10 +158,18 @@ export const MCP_SETTINGS_JSON_SCHEMA = {
     },
 };
 /** Per-user settings: the user's own servers (the `u_`-prefixed catalog
- * entries' source). The per-operator-server toggles stay flat keys beside
- * it (catalogEnabledFromSettings); unknown keys survive schema saves. */
+ * entries' source) and the flat per-operator-server enablement toggles
+ * (`settings[serverName]`, read by catalogEnabledFromSettings). Declaring
+ * the toggles as boolean-valued additional properties keeps TODAY'S shape
+ * — there is no second `toggles` key — and gives those values the same
+ * checked read as the server definitions. */
 export const MCP_USER_JSON_SCHEMA = {
     type: "object",
+    additionalProperties: {
+        type: "boolean",
+        "x-sigrun-apply": "live",
+        description: "Whether this operator-provided MCP server is enabled for you.",
+    },
     properties: {
         servers: {
             ...serversTable,

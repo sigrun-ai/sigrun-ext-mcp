@@ -25,9 +25,9 @@ export interface McpWiring {
     conversationCreated(event: OwnerEvent): Promise<void>;
     runSettled(event: OwnerEvent): Promise<void>;
     onSettingsChanged(keys: readonly string[], user?: string): Promise<void>;
-    /** The one-time mcp.json import (settings rework, Task 11): kicked off
-     * at the end of the factory, resolves once settings/secrets carry the
-     * file's servers (0 when there was nothing to import). */
+    /** The one-time mcp.json import (settings rework, Task 11): durable
+     * settings/secrets writes complete before the boot snapshot. Resolves
+     * to the imported server count (0 when there was nothing to import). */
     readonly imported: Promise<number>;
     /** Stop system clients immediately; per-user clients drain in-flight calls. */
     close(): Promise<void>;

@@ -43,7 +43,9 @@ is ignored with a log line.
 The `sigrun-ext-mcp oauth <server>` CLI reads the server from the same
 settings file plus the `sigrun-mcp` secrets section (config dir resolution:
 `SIGRUN_CONFIG_DIR` → `$XDG_CONFIG_HOME/sigrun` → `~/.config/sigrun`), and
-stores tokens as `<configDir>/mcp-tokens.json` (0600).
+stores tokens as `<configDir>/mcp-tokens.json` (0600). On first read or
+write, an existing legacy store beside the resolved `mcp.json` is renamed
+to that location; an already-present new store wins.
 
 ## Server fields
 

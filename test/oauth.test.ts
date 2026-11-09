@@ -17,6 +17,7 @@
  * behavior, and config backward compat.
  */
 
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -911,6 +912,36 @@ test("the CLI refuses per-user OAuth and names the extension start route", async
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+test("a legacy token store beside mcp.json is renamed into the config dir", async () => {
+	const dir = await tempDir("sigrun-mcp-token-migration-");
+	const legacyDir = await tempDir("sigrun-mcp-token-legacy-");
+	try {
+		const legacy = join(legacyDir, "mcp-tokens.json");
+		await writeFile(
+			legacy,
+			JSON.stringify({
+				acme: {
+					access_token: "legacy-token",
+					token_type: "Bearer",
+					obtained_at: 1,
+				},
+			}),
+			{ mode: 0o600 },
+		);
+		const env = {
+			SIGRUN_CONFIG_DIR: dir,
+			SIGRUN_MCP_CONFIG: join(legacyDir, "mcp.json"),
+		};
+		expect(loadMcpTokens(env).acme.access_token).toBe("legacy-token");
+		expect(existsSync(legacy)).toBe(false);
+		expect(existsSync(join(dir, "mcp-tokens.json"))).toBe(true);
+		expect((await stat(join(dir, "mcp-tokens.json"))).mode & 0o777).toBe(0o600);
+	} finally {
+		await cleanupDir(dir);
+		await cleanupDir(legacyDir);
+	}
+});
+
 test("starting a flow proactively evicts every expired pending flow", () => {
 	let now = 1_000;
 	const flows = createUserOauthFlows(() => now);

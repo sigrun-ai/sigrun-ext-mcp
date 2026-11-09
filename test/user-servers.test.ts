@@ -335,12 +335,10 @@ describe("user-supplied MCP server lifecycle", () => {
 		const wiring = await createMcpExtension(double.host);
 		if (wiring.perUserTools) double.declarePerUserTools();
 		cleanups.push(() => wiring.close());
-		// A malformed stored policy value: the checked read repairs it to
-		// the default (none — core's seam host logs the repair) and the
-		// extension keeps activation working, retiring the now-disallowed
-		// user servers.
+		// A malformed stored policy value keeps the last known-good policy;
+		// activation still completes instead of tearing down live servers.
 		double.setSharedSettings({ userServers: "bogus" });
 		await wiring.runSettled({ conversationId: ROOT_CONVERSATION_ID, owner: "alice" });
-		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual([]);
+		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
 	});
 });

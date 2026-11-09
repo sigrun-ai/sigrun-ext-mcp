@@ -31,6 +31,19 @@ describe("MCP settings schema", () => {
 		expect(checked.value.userServers).toBe("none");
 	});
 
+	test("the user schema checks the existing flat per-server toggles", () => {
+		const checked = checkStoredSettings(MCP_USER_JSON_SCHEMA, {
+			servers: {},
+			acme: true,
+			other: false,
+			broken: "yes",
+		});
+		expect(checked.value.acme).toBe(true);
+		expect(checked.value.other).toBe(false);
+		expect(checked.value.broken).toBeUndefined();
+		expect(checked.repairs.some((repair) => repair.path === "/broken")).toBe(true);
+	});
+
 	test("a wrong-typed stored value is dropped to its default", () => {
 		const checked = checkStoredSettings(MCP_SETTINGS_JSON_SCHEMA, {
 			userServers: "everything",

@@ -67,6 +67,7 @@ describe("the mcp.json import", () => {
 		cleanups.push(() => double.close());
 		const wiring = await openWithImport(double);
 		expect(await wiring.imported).toBe(2);
+		await wiring.ready; // the primary-admin notice is post-open
 
 		const settings = await double.host.stores.settings.get();
 		const servers = settings.servers as Record<string, Record<string, unknown>>;
@@ -92,6 +93,68 @@ describe("the mcp.json import", () => {
 		});
 	});
 
+	test("the factory import never touches the bridge; ready posts the notice", async () => {
+		const dir = await importDir();
+		const path = join(dir, "mcp.json");
+		await writeFile(
+			path,
+			JSON.stringify({
+				servers: { acme: { url: "https://acme.example.invalid/mcp", disabled: true } },
+			}),
+			"utf8",
+		);
+		withConfigEnv(path);
+		const double = createCatalogHost();
+		cleanups.push(() => double.close());
+		const list = double.host.users.list;
+		double.host.users.list = async () => {
+			throw new Error("bridge not bound");
+		};
+		const wiring = await openWithImport(double);
+		expect(await wiring.imported).toBe(1);
+		expect(double.shared.notices).toHaveLength(0);
+		double.host.users.list = list;
+		await wiring.ready;
+		expect(double.shared.notices).toHaveLength(0);
+		// A post-open lifecycle event retries a notice whose first ready
+		// attempt ran before the server bridge was available.
+		await wiring.runSettled({ conversationId: 1 as never, owner: "alice" });
+		expect(double.shared.notices).toHaveLength(1);
+		expect(double.shared.notices[0]).toMatchObject({
+			user: "alice",
+			key: "mcp.imported",
+		});
+	});
+
+	test("the first boot uses an imported env secret without a declared-handle read", async () => {
+		const dir = await importDir();
+		const path = join(dir, "mcp.json");
+		await writeFile(
+			path,
+			JSON.stringify({
+				servers: {
+					local: {
+						command: process.execPath,
+						args: [join(import.meta.dirname, "stub-mcp-server.mjs")],
+						env: { STUB_ENV_TOOL: "1" },
+						credentials: "shared",
+						sharedAuthority: "Synthetic shared test authority",
+					},
+				},
+			}),
+			"utf8",
+		);
+		withConfigEnv(path);
+		const double = createCatalogHost();
+		cleanups.push(() => double.close());
+		const wiring = await openWithImport(double);
+		await wiring.ready;
+		// getenv exists only when the child actually received the imported
+		// STUB_ENV_TOOL value; a placeholder-only boot read registers just
+		// echo/add.
+		expect(wiring.extension.tools?.map((tool) => tool.name)).toContain("local/getenv");
+	});
+
 	test("import runs once", async () => {
 		const dir = await importDir();
 		const path = join(dir, "mcp.json");
@@ -113,6 +176,7 @@ describe("the mcp.json import", () => {
 		// re-import: settings already carry servers.
 		const again = await openWithImport(double);
 		expect(await again.imported).toBe(0);
+		await again.ready;
 		expect(await double.host.stores.settings.get()).toEqual(stored);
 		expect(double.shared.notices).toHaveLength(1);
 	});
@@ -136,6 +200,7 @@ describe("the mcp.json import", () => {
 		const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		const wiring = await openWithImport(double);
 		expect(await wiring.imported).toBe(0);
+		await wiring.ready;
 		expect(log).toHaveBeenCalledWith(
 			`ignoring ${path}: servers are configured in settings`,
 		);
@@ -184,6 +249,7 @@ describe("the mcp.json import", () => {
 		const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		const wiring = await openWithImport(double);
 		expect(await wiring.imported).toBe(0);
+		await wiring.ready;
 		expect(log).toHaveBeenCalledWith(expect.stringContaining("mcp import skipped"));
 		expect(await double.host.stores.settings.get()).toEqual({});
 		expect(double.shared.notices).toHaveLength(0);

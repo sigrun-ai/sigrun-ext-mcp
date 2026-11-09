@@ -8,8 +8,11 @@
  * `env/<KEY>`), everything else into the settings file, with the legacy
  * spellings normalized (`disabled` → `enabled`, `codemode-deferred` →
  * `codemode`) and the transport discriminator inferred. The file is then
- * never read again; one log line and one primary-admin notice
- * (`key: "mcp.imported"`) record the move.
+ * never read again; one log line records the move. The returned record
+ * carries the notice text for the factory's post-open `ready` path — the
+ * factory window must never call the bridge-delegated `host.users` or
+ * `host.notices` (they wait for the harness, which waits for the loader,
+ * which is awaiting this factory).
  *
  * When settings already have servers and the file exists, the file is
  * ignored with a log line — settings win.
@@ -19,18 +22,11 @@ import { parseMcpSettings, resolveMcpConfigPath, } from "./config.js";
 import { isStdioServer } from "./config.js";
 /** The import notice's replace key (Task 6 ruling: no kind on the wire). */
 export const MCP_IMPORT_NOTICE_KEY = "mcp.imported";
-/** The primary admin: the earliest-created directory user with the admin
- * flag (core's primary-admin rule). `undefined` on an empty directory. */
-function primaryAdmin(users) {
-    const admins = users.filter((user) => user.admin === true);
-    const sorted = [...admins].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
-    return sorted[0]?.user ?? admins[0]?.user;
-}
 /**
- * Run the import if it applies. Returns the number of imported servers
+ * Run the import if it applies. `count` is the number of imported servers
  * (0 when there was nothing to do). Never throws into the loader: a
  * failed import logs and leaves the settings untouched so the next boot
- * retries.
+ * retries. No bridge-delegated host surface is touched.
  */
 export async function importMcpJsonIfPresent(host, options = {}) {
     const env = options.env ?? process.env;
@@ -43,10 +39,10 @@ export async function importMcpJsonIfPresent(host, options = {}) {
         !Array.isArray(settings.servers) &&
         Object.keys(settings.servers).length > 0;
     if (!existsSync(path))
-        return 0;
+        return { count: 0 };
     if (hasServers) {
         log(`ignoring ${path}: servers are configured in settings`);
-        return 0;
+        return { count: 0 };
     }
     let imported;
     try {
@@ -54,7 +50,7 @@ export async function importMcpJsonIfPresent(host, options = {}) {
     }
     catch (cause) {
         log(`mcp import skipped: ${cause instanceof Error ? cause.message : String(cause)}`);
-        return 0;
+        return { count: 0 };
     }
     const servers = {};
     const secrets = [];
@@ -68,22 +64,15 @@ export async function importMcpJsonIfPresent(host, options = {}) {
     for (const [key, value] of secrets)
         await host.stores.secrets.set(key, value);
     await host.stores.settings.set({ ...settings, servers });
-    log(`imported ${Object.keys(servers).length} servers from ${path}; the file is no longer read`);
-    const admin = primaryAdmin(await host.users.list());
-    if (admin !== undefined) {
-        try {
-            await host.notices.post({
-                user: admin,
-                key: MCP_IMPORT_NOTICE_KEY,
-                title: "MCP servers imported into settings",
-                body: `Imported ${Object.keys(servers).length} servers from ${path}. The file is no longer read; edit them in Settings → sigrun-mcp.`,
-            });
-        }
-        catch (cause) {
-            log(`mcp import notice failed: ${cause instanceof Error ? cause.message : String(cause)}`);
-        }
-    }
-    return Object.keys(servers).length;
+    const count = Object.keys(servers).length;
+    log(`imported ${count} servers from ${path}; the file is no longer read`);
+    return {
+        count,
+        notice: {
+            title: "MCP servers imported into settings",
+            body: `Imported ${count} servers from ${path}. The file is no longer read; edit them in Settings → sigrun-mcp.`,
+        },
+    };
 }
 /** Split one server's secret values out of its settings entry. */
 function stripSecrets(name, server, out) {

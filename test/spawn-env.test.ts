@@ -32,7 +32,12 @@ test("stdio servers get the allowlist and their config env, never sigrun's secre
 test("a stored token is still injected, and the config-dir variable used to find it is not", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-mcp-spawn-env-"));
 	try {
-		const source = { ...SECRETS, PATH: "/usr/bin", [MCP_CONFIG_ENV]: join(dir, "mcp.json") };
+		const source = {
+			...SECRETS,
+			PATH: "/usr/bin",
+			[MCP_CONFIG_ENV]: join(dir, "mcp.json"),
+			SIGRUN_CONFIG_DIR: dir,
+		};
 		storeMcpToken(
 			"stub",
 			{ access_token: "tok-123", token_type: "Bearer", obtained_at: 1 },

@@ -1,7 +1,8 @@
 /**
- * The OAuth token store (ruling 2): a JSON file BESIDE the resolved mcp.json
- * — `<resolved-config-dir>/mcp-tokens.json` — so the `SIGRUN_MCP_CONFIG`
- * override relocates tokens with config (a test / pod override moves both).
+ * The OAuth token store: `<sigrun-config-dir>/mcp-tokens.json`. Stores
+ * from before the settings rework lived beside the resolved mcp.json;
+ * the first read/write renames that legacy file here when no new store
+ * exists yet.
  *
  * Shape (one entry per configured server name):
  *   { "<server-name>": {
