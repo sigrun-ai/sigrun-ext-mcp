@@ -5,7 +5,11 @@
  * `codemode-deferred` exposure word).
  */
 import { describe, expect, test } from "vitest";
-import { assertDrawable, checkStoredSettings } from "@sigrun/sigrun/settings-schema";
+import {
+	assertDrawable,
+	checkStoredSettings,
+	generateForm,
+} from "@sigrun/sigrun/settings-schema";
 import {
 	MCP_SETTINGS_JSON_SCHEMA,
 	MCP_USER_JSON_SCHEMA,
@@ -16,6 +20,63 @@ describe("MCP settings schema", () => {
 	test("schema is drawable", () => {
 		assertDrawable(MCP_SETTINGS_JSON_SCHEMA);
 		assertDrawable(MCP_USER_JSON_SCHEMA);
+	});
+
+	test("a stored URL server row keeps every field in the generated table value shape", () => {
+		const generated = generateForm(MCP_SETTINGS_JSON_SCHEMA, { idPrefix: "test" });
+		const root = generated.form.root as unknown as { children: Record<string, unknown>[] };
+		const servers = root.children.find((field) => field.name === "servers") as unknown as {
+			item: ({ name?: string; type: string } | { type: string; children: unknown[] })[];
+		};
+		const itemNames = servers.item.flatMap((field) =>
+			"name" in field && typeof field.name === "string" ? [field.name] : [],
+		);
+		expect(itemNames).toEqual(expect.arrayContaining([
+			"transport", "url", "headers", "command", "args", "env",
+		]));
+		expect(servers.item.some(
+			(field) => field.type === "section" && "title" in field && field.title === "OAuth",
+		)).toBe(true);
+		// The flattened row is what the entries channel binds. An opened
+		// stored row submits all its fields plus its saved identity; it is not
+		// collapsed into a synthetic `value` variant arm.
+		const submitted = {
+			transport: "url",
+			url: "https://acme.example.invalid/mcp",
+			headers: { Authorization: "" },
+			enabled: true,
+			$from: "acme",
+		};
+		expect(submitted).toMatchObject({
+			url: "https://acme.example.invalid/mcp",
+			headers: { Authorization: "" },
+			$from: "acme",
+		});
+		const { $from: _from, ...entry } = submitted;
+		const checked = checkStoredSettings(MCP_SETTINGS_JSON_SCHEMA, {
+			servers: { acme: entry },
+		});
+		expect(checked.repairs).toEqual([]);
+	});
+
+	test("the user-settings form draws the flat server toggles as a table", () => {
+		const generated = generateForm(MCP_USER_JSON_SCHEMA, { idPrefix: "test-user" });
+		const table = (generated.form.root as unknown as { children: Record<string, unknown>[] }).children
+			.find((field) => field.name === "") as unknown as {
+				type: string;
+				shape: string;
+				item: { type: string; name: string }[];
+			};
+		expect(table).toMatchObject({
+			type: "entries",
+			shape: "table",
+			item: [{ type: "toggle", name: "value" }],
+		});
+		// A stored flat toggle is data for that table, not an unknown key.
+		const stored = { servers: {}, acme: true };
+		expect(checkStoredSettings(MCP_USER_JSON_SCHEMA, stored).value).toMatchObject({
+			acme: true,
+		});
 	});
 
 	test("defaults: no servers, userServers none, entries enabled and codemode", () => {

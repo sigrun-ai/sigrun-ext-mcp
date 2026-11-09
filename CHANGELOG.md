@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the file is ignored. Header/env values are `writeOnly` store-backed
   secrets. Publishes the `mcp.servers` hook (name, resolved enabled,
   exposure, tool exposure) for codemode's namespaces. The CLI
-  `sigrun-ext-mcp oauth <name>` reads servers from settings. Raises the
-  `@sigrun/sigrun` peer floor to the settings-rework core.
+  `sigrun-ext-mcp oauth <name>` reads servers from settings. Requires the
+  settings-rework core (`host.settings.declare`); this package carries no
+  `@sigrun/sigrun` runtime peer dependency.
 - peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.11.0).
 
 ## [0.2.3] - 2026-11-05

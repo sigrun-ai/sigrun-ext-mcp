@@ -11,8 +11,6 @@ import {
 } from "../src/user-servers.js";
 import { createCatalogHost } from "./catalog-host.js";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { validateTree } from "@sigrun/sigrun/blocks";
-import { assertFreshCoreBlocks } from "./core-blocks-freshness.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -217,20 +215,6 @@ describe("user-supplied MCP server lifecycle", () => {
 		expect(warning).toHaveBeenCalledWith(expect.stringMatching(/user \"alice\".*not valid JSON/));
 	});
 
-	it("passes the contributed form through core's real settings validator", () => {
-		assertFreshCoreBlocks();
-		const double = createCatalogHost();
-		cleanups.push(() => double.close());
-		const catalog = createUserCatalog(double.host, {}, "remote");
-		double.declarePerUserTools();
-		cleanups.push(() => catalog.close());
-		const section = catalog.settings.find((item) => item.id === "user-servers");
-		expect(section?.scope).toBe("user");
-		expect(validateTree(section?.form, {
-			placement: "settings",
-			handlers: new Set(["save", "submit"]),
-		})).toMatchObject({ ok: true });
-	});
 
 	it("keeps URL tools across all to remote and retires them at none", async () => {
 		// The all-mode stdio refusal above is intentional; this URL fixture

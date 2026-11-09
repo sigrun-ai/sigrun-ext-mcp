@@ -120,19 +120,9 @@ export declare function discoverMcpTools(name: string, server: McpServerConfig, 
 export declare function catalogEnabledFromSettings(name: string, server: McpServerConfig, settings: Record<string, unknown>): boolean;
 export declare function catalogEnabled(host: SigrunHost, user: string, name: string, server: McpServerConfig): Promise<boolean>;
 export declare function sharedServerAllowed(host: SigrunHost, conversationId: ConversationId, name: string, server: McpServerConfig): Promise<boolean>;
-export interface CatalogSettingsSection {
-    readonly id: string;
-    readonly title: string;
-    readonly scope: "user";
-    readonly form: {
-        readonly v: 1;
-        readonly root: Record<string, unknown>;
-    };
-}
 export interface UserCatalog {
     readonly perUserTools: boolean;
     readonly userServices: readonly UserService[];
-    readonly settings: readonly CatalogSettingsSection[];
     activate(user: string, ctx?: HandlerContext): Promise<void>;
     retire(user: string, server: string): Promise<void>;
     exposures(user: string): ReadonlyMap<string, ServerExposure>;

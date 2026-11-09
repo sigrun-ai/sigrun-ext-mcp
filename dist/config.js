@@ -473,7 +473,16 @@ export function parseMcpSettings(settings, source = "settings") {
         raw.servers = Object.fromEntries(Object.entries(raw.servers).map(([name, entry]) => {
             if (!isRecord(entry))
                 return [name, entry];
-            const { transport: _transport, ...rest } = normalizeServerAliases(entry);
+            const normalized = normalizeServerAliases(entry);
+            // The flattened drawable row carries `args`'s schema default on
+            // EVERY variant. On a URL row with no command it is presentation
+            // default fill, not a stdio transport signal; drop it before the
+            // legacy parser's command-or-args dispatch. An explicit command
+            // alongside url still fails the both-transports rule.
+            if (normalized.url !== undefined && normalized.command === undefined) {
+                delete normalized.args;
+            }
+            const { transport: _transport, ...rest } = normalized;
             return [name, rest];
         }));
     }

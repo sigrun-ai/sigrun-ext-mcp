@@ -351,19 +351,9 @@ interface UserCatalogState {
 	readonly connections: Map<string, CatalogConnection>;
 	refresh: Promise<void>;
 }
-export interface CatalogSettingsSection {
-	readonly id: string;
-	readonly title: string;
-	readonly scope: "user";
-	readonly form: {
-		readonly v: 1;
-		readonly root: Record<string, unknown>;
-	};
-}
 export interface UserCatalog {
 	readonly perUserTools: boolean;
 	readonly userServices: readonly UserService[];
-	readonly settings: readonly CatalogSettingsSection[];
 	activate(user: string, ctx?: HandlerContext): Promise<void>;
 	retire(user: string, server: string): Promise<void>;
 	exposures(user: string): ReadonlyMap<string, ServerExposure>;
@@ -408,11 +398,6 @@ function userServersFromSettings(
 	return parseMcpSettings({ servers: value }, "user settings servers").servers;
 }
 
-function sharedAuthorityHelp(reason: string | undefined): string {
-	const authority = reason?.trim() ?? "Shared authority was not stated.";
-	const sentence = /[.!?]$/.test(authority) ? authority : `${authority}.`;
-	return `${sentence} Shared MCP servers hand every permitted user's agent the admin's credential for that service.`;
-}
 
 export function createUserCatalog(
 	host: SigrunHost,
@@ -605,62 +590,10 @@ export function createUserCatalog(
 		await current;
 	};
 
-	const enabledServers = Object.entries(servers).filter(([, server]) => serverEnabled(server));
-	const settings: CatalogSettingsSection[] = mode === "none" ? [] : [{
-		id: "user-servers",
-		title: "Your MCP servers",
-		scope: "user",
-		form: {
-			v: 1,
-			root: {
-				type: "form",
-				id: "mcp-user-servers-form",
-				bind: "/settings",
-				mode: "submit",
-				onSubmit: "save",
-				children: [{
-					type: "longtext",
-					name: "servers",
-					label: "MCP server definitions",
-					default: "{}",
-					syntax: "code",
-					lang: "json",
-					help: "Define MCP servers as a JSON object. Remote servers use url; stdio availability depends on the operator's userServers policy.",
-				}],
-			},
-		},
-	}];
-	if (enabledServers.length > 0) {
-		settings.push({
-			id: "catalog",
-			title: "MCP servers",
-			scope: "user",
-			form: {
-				v: 1,
-				root: {
-					type: "form",
-					id: "mcp-catalog-form",
-					bind: "/settings",
-					mode: "submit",
-					onSubmit: "save",
-					children: enabledServers.map(([name, server]) => ({
-						type: "toggle",
-						name,
-						label: name,
-						default: server.availability !== "opt-in",
-						...(server.credentials === "shared"
-							? { help: sharedAuthorityHelp(server.sharedAuthority) }
-							: {}),
-					})),
-				},
-			},
-		});
-	}
 
 	return {
 		perUserTools: true,
 		userServices,
-		settings,
 		activate,
 		retire,
 		reconcileAll,

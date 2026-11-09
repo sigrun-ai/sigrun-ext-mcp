@@ -79,27 +79,13 @@ const commonFields = {
 	},
 } as const;
 
-const urlServer = {
-	type: "object",
-	title: "Remote (URL)",
-	properties: {
-		transport: { const: "url" },
-		url: {
-			type: "string",
-			pattern: "^https?://",
-			description:
-				"The streamable-HTTP endpoint (legacy SSE negotiated on first contact).",
-		},
-		headers: {
-			type: "object",
-			additionalProperties: { type: "string", writeOnly: true },
-			description:
-				"Extra request headers; values are secrets stored in the secrets store.",
-		},
-		...commonFields,
-	},
-} as const;
-
+/**
+ * One server row is ONE object, not a oneOf of transport arms. The drawable
+ * table contract needs the row's fields at the item's top level; a union
+ * there becomes one synthetic `value` field and loses the other fields on
+ * save. `transport` is the choice, and the parser applies the per-transport
+ * required/forbidden-field rules after the checked read.
+ */
 const oauthGroup = {
 	type: "object",
 	title: "OAuth",
@@ -118,11 +104,27 @@ const oauthGroup = {
 	},
 } as const;
 
-const commandServer = {
+const serverEntry = {
 	type: "object",
-	title: "Stdio (command)",
 	properties: {
-		transport: { const: "command" },
+		transport: {
+			oneOf: [
+				{ const: "url", title: "Remote (URL)" },
+				{ const: "command", title: "Stdio (command)" },
+			],
+		},
+		url: {
+			type: "string",
+			pattern: "^https?://",
+			description:
+				"The streamable-HTTP endpoint (legacy SSE negotiated on first contact).",
+		},
+		headers: {
+			type: "object",
+			additionalProperties: { type: "string", writeOnly: true },
+			description:
+				"Extra request headers; values are secrets stored in the secrets store.",
+		},
 		command: { type: "string", minLength: 1, description: "The executable to spawn." },
 		args: { type: "array", items: { type: "string" }, default: [] },
 		env: {
@@ -134,10 +136,6 @@ const commandServer = {
 		oauth: oauthGroup,
 		...commonFields,
 	},
-} as const;
-
-const serverEntry = {
-	oneOf: [urlServer, commandServer],
 	"x-sigrun-summary": ["transport", "credentials", "exposure"],
 } as const;
 
@@ -185,6 +183,7 @@ export const MCP_USER_JSON_SCHEMA = {
 	type: "object",
 	additionalProperties: {
 		type: "boolean",
+		title: "MCP servers",
 		"x-sigrun-apply": "live",
 		description: "Whether this operator-provided MCP server is enabled for you.",
 	},
