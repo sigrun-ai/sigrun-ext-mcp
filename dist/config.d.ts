@@ -1,18 +1,21 @@
 /**
- * The MCP config store: reads `mcp.json` — the MCP server registry.
+ * MCP server configuration (settings rework, Task 11): the operator's
+ * server registry lives in the extension's SETTINGS
+ * (`<configDir>/settings/sigrun-mcp.json`, declared through
+ * `host.settings.declare` — see settings-schema.ts). `parseMcpSettings`
+ * turns the checked settings object (defaults applied, secrets filled by
+ * core) into the `McpConfig` the wiring consumes, applying the rules the
+ * schema cannot express.
  *
- * Resolution order (ruling 2):
- *   1. `SIGRUN_MCP_CONFIG` env override — an explicit path to an mcp.json
- *   2. `~/.config/sigrun/mcp.json` (the sigrun config dir)
- *
- * Shape:
- *   { "servers": { "<name>": {
- *       "command": string, "args": string[], "env"?: {...}, "disabled"?: boolean
- *   } } }
+ * The `mcp.json` reader survives ONLY for the one-time import
+ * (`importMcpJson`, extension.ts): an install upgraded from the file-based
+ * config gets its servers moved into settings once, and the file is never
+ * read again.
  *
  * Fail-loud on malformed config: unparseable JSON or a wrong-shaped body
- * throws a clear error naming the path (the loader turns a throwing factory
- * into quarantine semantics — this package never silently degrades).
+ * throws a clear error naming the source (the loader turns a throwing
+ * factory into quarantine semantics — this package never silently
+ * degrades).
  */
 /** How one tool's registration reaches callers (pi-durable 1.2.0):
  * `codemode` → `callers: ["tools"]` (scripts only, never model-offered),
@@ -119,9 +122,46 @@ export declare function resolveMcpConfigPath(env?: NodeJS.ProcessEnv): string;
  */
 export declare function parseMcpConfig(text: string, source: string): McpConfig;
 /**
- * Read and parse the config from the resolved path. A missing file is an
- * empty config (zero servers — the extension installs and contributes
- * nothing); an existing-but-malformed file throws.
+ * Read and parse the legacy `mcp.json` from the resolved path. A missing
+ * file is an empty config; an existing-but-malformed file throws. Kept
+ * ONLY for the one-time import — production reads settings.
  */
 export declare function loadMcpConfig(env?: NodeJS.ProcessEnv): McpConfig;
+/**
+ * Resolve sigrun's config dir the way core does (stores.ts tiers):
+ * `SIGRUN_CONFIG_DIR` verbatim → `$XDG_CONFIG_HOME/sigrun` →
+ * `~/.config/sigrun`. The CLI reads settings from here; the extension
+ * itself never calls this (its stores are host-scoped).
+ */
+export declare function resolveSigrunConfigDir(env?: NodeJS.ProcessEnv): string;
+/** The built-in's settings slug (core src/harness/builtins.ts). */
+export declare const MCP_SETTINGS_SLUG = "sigrun-mcp";
+/**
+ * Read the operator's MCP settings from disk for the CLI: the declared
+ * settings file plus the secrets section, with the secret values filled
+ * back into the header/env slots (the file carries empty-string
+ * placeholders for them). Absent files mean an empty registry.
+ */
+export declare function readMcpSettingsForCli(env?: NodeJS.ProcessEnv): McpConfig;
+/**
+ * Normalize legacy spellings in a raw stored settings object BEFORE the
+ * checked read (settings rework, Task 11): the `disabled` alias folds
+ * into `enabled` and pi's `codemode-deferred` exposure alias normalizes
+ * to `codemode`. Running ahead of schema validation is load-bearing: the
+ * schema cannot spell the aliases, so an unnormalized stored value would
+ * otherwise be "repaired" away (a codemode-deferred server would flip to
+ * the default exposure, or be dropped outright).
+ */
+export declare function normalizeMcpSettingsAliases(settings: Record<string, unknown>): Record<string, unknown>;
+/**
+ * Parse the checked settings object into the runtime config. The schema
+ * read already applied defaults and repaired malformed values; this pass
+ * enforces the cross-field rules (shared authority, users allowlist,
+ * enabled/disabled agreement, OAuth shape) and normalizes the legacy
+ * spellings. `transport` is inferred when absent (`url` present → url).
+ *
+ * `source` names the settings scope in error messages (e.g. "settings"
+ * or "user settings servers").
+ */
+export declare function parseMcpSettings(settings: Record<string, unknown>, source?: string): McpConfig;
 export {};

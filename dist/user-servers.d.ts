@@ -23,7 +23,38 @@ export interface UserService {
 export interface ServiceHandle extends McpServiceHandle {
     readonly stderr: ReadableStream<Uint8Array>;
 }
+/** The settings declaration contract (settings rework, Task 11): mirrors
+ * core's `host.settings.declare` — structural, so the real host and this
+ * repo's test doubles both satisfy it. */
+export interface SettingsDeclarationMirror {
+    readonly schema: Readonly<Record<string, unknown>>;
+    readonly userSchema?: Readonly<Record<string, unknown>>;
+}
+export interface DeclaredSettingsMirror {
+    get(): Promise<Record<string, unknown>>;
+    user(user: string): {
+        get(): Promise<Record<string, unknown>>;
+    };
+}
 export interface SigrunHost {
+    readonly settings: {
+        declare(decl: SettingsDeclarationMirror): DeclaredSettingsMirror;
+    };
+    readonly users: {
+        list(): Promise<readonly {
+            readonly user: string;
+            readonly admin?: boolean;
+            readonly createdAt?: number;
+        }[]>;
+    };
+    readonly notices: {
+        post(input: {
+            readonly user: string;
+            readonly key?: string;
+            readonly title: string;
+            readonly body?: string;
+        }): Promise<unknown>;
+    };
     readonly tools: {
         setUserTools(user: string, tools: readonly ToolRegistration[]): void;
     };
@@ -31,6 +62,15 @@ export interface SigrunHost {
         connect(name: string, user: string, ctx: HandlerContext): Promise<ServiceHandle>;
     };
     readonly stores: {
+        readonly secrets: {
+            get(key: string): Promise<string | undefined>;
+            set(key: string, value: string): Promise<void>;
+            delete(key: string): Promise<void>;
+        };
+        readonly settings: {
+            get(): Promise<Record<string, unknown>>;
+            set(value: Record<string, unknown>): Promise<void>;
+        };
         user(user: string): {
             readonly secrets: {
                 get(key: string): Promise<string | undefined>;

@@ -4,10 +4,9 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { expect, test } from "vitest";
 import { defineDoc, type ConversationId, type ToolRegistration } from "@earendil-works/pi-durable";
-import { createMcpExtension } from "../src/extension.js";
-import { MCP_CONFIG_ENV } from "../src/config.js";
+import { createMcpExtension, type McpWiring } from "../src/extension.js";
 import { createCatalogHost, type CatalogHostDouble } from "./catalog-host.js";
-import { cleanupDir, stubConfigPath, tempDir, writeConfig } from "./harness.js";
+import { cleanupDir, settingsEntry, tempDir } from "./harness.js";
 
 const STUB_SERVER = join(import.meta.dirname, "stub-mcp-server.mjs");
 const HANG_SERVER = join(import.meta.dirname, "stub-hang-server.mjs");
@@ -23,7 +22,7 @@ const SessionMetaDoc = defineDoc<{ owner?: string }>({
 });
 
 interface OpenedCatalog {
-	readonly wiring: ReturnType<typeof createMcpExtension>;
+	readonly wiring: McpWiring;
 	readonly double: CatalogHostDouble;
 }
 
@@ -32,16 +31,16 @@ async function openCatalog(
 ): Promise<OpenedCatalog & { close(): Promise<void> }> {
 	const dir = await tempDir("sigrun-mcp-catalog-");
 	const double = createCatalogHost();
-	const prior = process.env[MCP_CONFIG_ENV];
-	process.env[MCP_CONFIG_ENV] = stubConfigPath(dir);
-	let wiring: ReturnType<typeof createMcpExtension>;
-	try {
-		await writeConfig(stubConfigPath(dir), servers);
-		wiring = createMcpExtension(double.host);
-	} finally {
-		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
-		else process.env[MCP_CONFIG_ENV] = prior;
-	}
+	// The registry lives in shared settings; no legacy file exists.
+	double.setSharedSettings({
+		servers: Object.fromEntries(
+			Object.entries(servers).map(([name, server]) => [
+				name,
+				settingsEntry(server as Record<string, unknown>),
+			]),
+		),
+	});
+	const wiring = await createMcpExtension(double.host);
 	if (wiring.perUserTools) double.declarePerUserTools();
 	double.registerServices(wiring.userServices);
 	return {

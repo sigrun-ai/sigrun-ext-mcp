@@ -1,8 +1,10 @@
 /**
  * Shared test harness: opens a REAL pi-durable Harness (registry + faux
- * provider) with the MCP extension installed against a temp config — the
- * same shape as the other sigrun extension harnesses, no sigrun-core
- * dependency.
+ * provider) with the MCP extension installed against settings seeded in
+ * the host double (settings rework, Task 11: the server registry lives in
+ * settings; `mcp.json` exists only as the import source) — the same shape
+ * as the other sigrun extension harnesses, no sigrun-core dependency
+ * beyond the settings-schema helpers.
  */
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -25,11 +27,14 @@ import { MCP_CONFIG_ENV } from "../src/config.js";
 import { createMcpExtension, type McpWiring } from "../src/extension.js";
 import { createCatalogHost } from "./catalog-host.js";
 
-/** Configure the factory's config store via the env override. */
+/** Legacy fixture path: where a test that WANTS an mcp.json import writes
+ * the file (SIGRUN_MCP_CONFIG points at it). Production reads settings. */
 export function stubConfigPath(dir: string): string {
 	return join(dir, "mcp.json");
 }
 
+/** Write a legacy mcp.json (the import source; tests that exercise the
+ * import call this, everything else seeds shared settings). */
 export async function writeConfig(
 	path: string,
 	servers: Record<string, unknown>,
@@ -49,6 +54,14 @@ export async function writeConfig(
 	await writeFile(path, JSON.stringify({ servers: shared }), "utf8");
 }
 
+/** The settings-file spelling of a fixture server (transport inferred). */
+export function settingsEntry(server: Record<string, unknown>): Record<string, unknown> {
+	return {
+		transport: "url" in server ? "url" : "command",
+		...server,
+	};
+}
+
 export interface OpenedHarness {
 	readonly harness: Harness;
 	readonly defaultModel: ModelRef;
@@ -63,23 +76,36 @@ export async function openMcpHarness(
 		ReturnType<typeof fauxProvider>["setResponses"]
 	>[0] = [fauxAssistantMessage("no tools needed")],
 ): Promise<OpenedHarness> {
-	const prior = process.env[MCP_CONFIG_ENV];
-	process.env[MCP_CONFIG_ENV] = stubConfigPath(dir);
 	let wiring: McpWiring;
+	const double = createCatalogHost();
+	// The fixture file is the fixture SOURCE, already transcribed into
+	// shared settings above. Point the legacy-config env at a NONEXISTENT
+	// path so the one-time import never fires on this path (and never
+	// reads the developer's real ~/.config/sigrun/mcp.json).
+	const prior = process.env[MCP_CONFIG_ENV];
+	process.env[MCP_CONFIG_ENV] = join(dir, "no-legacy-config.json");
 	try {
-		const double = createCatalogHost();
 		double.actingUsers.set(ROOT_CONVERSATION_ID, "alice");
 		const { readFile } = await import("node:fs/promises");
 		const parsed = JSON.parse(
 			await readFile(stubConfigPath(dir), "utf8"),
 		) as { servers: Record<string, unknown> };
+		// The registry lives in the extension's shared settings now.
+		double.setSharedSettings({
+			servers: Object.fromEntries(
+				Object.entries(parsed.servers).map(([name, server]) => [
+					name,
+					settingsEntry(server as Record<string, unknown>),
+				]),
+			),
+		});
 		// Production reads the flat availability form: settings[serverName]
 		// (see catalogEnabledFromSettings). The old nested {catalog: {...}}
 		// seed was dead — nothing reads it.
 		double.setSettings("alice", Object.fromEntries(
 			Object.keys(parsed.servers).map((name) => [name, true]),
 		));
-		wiring = createMcpExtension(double.host);
+		wiring = await createMcpExtension(double.host);
 		// Mirror the core loader: the factory result's perUserTools field is
 		// the declaration signal. createUserCatalog returns perUserTools: true;
 		// the loader (or this double) must read it and declare. This is NOT

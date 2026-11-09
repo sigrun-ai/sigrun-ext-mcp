@@ -146,7 +146,7 @@ test("a tools/call round-trip through the raw client resolves the result", async
 	}
 });
 
-test("malformed config throws a clear error from the factory (quarantine semantics)", async () => {
+test("malformed stored settings throw a clear error from the factory (quarantine semantics)", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-mcp-"));
 	try {
 		const { writeFile } = await import("node:fs/promises");
@@ -155,7 +155,11 @@ test("malformed config throws a clear error from the factory (quarantine semanti
 		const prior = process.env[MCP_CONFIG_ENV];
 		process.env[MCP_CONFIG_ENV] = path;
 		try {
-			expect(() => createMcpExtension(createCatalogHost().host)).toThrow(/not valid JSON/);
+			const double = createCatalogHost();
+		double.setSharedSettings({
+			servers: { bad: { transport: "command", command: 42 } },
+		});
+		await expect(createMcpExtension(double.host)).rejects.toThrow(/settings/);
 		} finally {
 			if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
 			else process.env[MCP_CONFIG_ENV] = prior;

@@ -14,12 +14,13 @@
  * the config store).
  */
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { resolveMcpConfigPath } from "./config.js";
-/** Resolve the token-store path for a given environment (beside config). */
+import { join } from "node:path";
+import { resolveSigrunConfigDir } from "./config.js";
+/** Resolve the token-store path for a given environment (in the sigrun
+ * config dir — settings rework, Task 11: mcp.json is retired, so tokens
+ * live beside the settings files). */
 export function resolveMcpTokenPath(env = process.env) {
-    const configPath = resolveMcpConfigPath(env);
-    return join(dirname(configPath), "mcp-tokens.json");
+    return join(resolveSigrunConfigDir(env), "mcp-tokens.json");
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);

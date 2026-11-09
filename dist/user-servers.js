@@ -4,7 +4,7 @@
 import { Type } from "typebox";
 import { defineTool, } from "@earendil-works/pi-durable";
 import { connectMcpServer, } from "./client.js";
-import { isStdioServer, parseMcpConfig, resolveToolExposure, serverEnabled, } from "./config.js";
+import { isStdioServer, parseMcpSettings, resolveToolExposure, serverEnabled, } from "./config.js";
 /** Copy only the four boolean hint values; anything else is untrusted noise. */
 function keepBooleanAnnotations(annotations) {
     if (annotations === undefined)
@@ -199,9 +199,10 @@ function userServersFromSettings(settings) {
             throw new Error(`mcp config user settings servers is not valid JSON: ${errorMessage(cause)}`);
         }
     }
-    // Reuse the wire validator so a user cannot supply fields or transports
-    // that the operator registry would reject under a different code path.
-    return parseMcpConfig(JSON.stringify({ servers: value }), "user settings servers").servers;
+    // Reuse the settings parser so a user cannot supply fields or
+    // transports that the operator registry would reject under a different
+    // code path.
+    return parseMcpSettings({ servers: value }, "user settings servers").servers;
 }
 function sharedAuthorityHelp(reason) {
     const authority = reason?.trim() ?? "Shared authority was not stated.";

@@ -23,7 +23,9 @@ export interface McpStoredToken {
 }
 /** The whole token store: server name → token. */
 export type McpTokenStore = Record<string, McpStoredToken>;
-/** Resolve the token-store path for a given environment (beside config). */
+/** Resolve the token-store path for a given environment (in the sigrun
+ * config dir — settings rework, Task 11: mcp.json is retired, so tokens
+ * live beside the settings files). */
 export declare function resolveMcpTokenPath(env?: NodeJS.ProcessEnv): string;
 /** Parse and validate a token-store body. */
 export declare function parseMcpTokenStore(text: string, source: string): McpTokenStore;

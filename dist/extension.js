@@ -1,8 +1,11 @@
 /** Catalog wiring: shared operator services remain system children, while
  * per-user entries connect and publish through the structural sigrun host. */
 import { defineDoc, defineExtension } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import { connectMcpServer } from "./client.js";
-import { loadMcpConfig, MCP_CONFIG_ENV, resolveMcpConfigPath, serverEnabled, } from "./config.js";
+import { normalizeMcpSettingsAliases, parseMcpSettings, serverEnabled, } from "./config.js";
+import { MCP_SETTINGS_JSON_SCHEMA, MCP_USER_JSON_SCHEMA, } from "./settings-schema.js";
+import { importMcpJsonIfPresent } from "./import.js";
 import { createUserOauthFlows, exchangeCode, extractCode, } from "./oauth.js";
 import { storeUserMcpToken } from "./tokens.js";
 import { MCP_SERVERS_SECTION_KEY, partitionForSection, renderMcpServersSection, } from "./section.js";
@@ -47,14 +50,59 @@ function sharedTool(host, name, server, tool) {
 function errorMessage(cause) {
     return cause instanceof Error ? cause.message : String(cause);
 }
+/** The settings handle the factory declared (per host; core permits
+ * `settings.declare` only during the factory, so every later read
+ * resolves the factory's handle rather than re-declaring). */
+const declaredByHost = new WeakMap();
+/** Fold the legacy aliases into the stored settings ONCE at boot (a
+ * settings migration): the schema cannot spell `disabled` or
+ * `codemode-deferred`, so an unnormalized stored value would be repaired
+ * away by the checked read. Writing the folded object back keeps every
+ * later read on the declared handle (core's repair logging + admin
+ * notice + secret fill), instead of a parallel local read path. */
+async function foldStoredAliases(host) {
+    const stored = await host.stores.settings.get();
+    const folded = normalizeMcpSettingsAliases(stored);
+    if (JSON.stringify(folded) !== JSON.stringify(stored)) {
+        await host.stores.settings.set(folded);
+    }
+}
+/** Read the operator config LIVE through the factory's declared handle
+ * (defaults applied and secrets filled by core's checked read). */
+export async function readMcpConfig(host) {
+    const declared = declaredByHost.get(host);
+    if (declared === undefined) {
+        throw new Error("readMcpConfig before the factory declared settings");
+    }
+    return parseMcpSettings((await declared.get()), "settings");
+}
 // The host parameter is REQUIRED: sigrun passes it only to factories whose
 // length is greater than zero. An optional/defaulted parameter has length 0
 // and would silently receive no host, disabling every per-user operation.
-export function createMcpExtension(host) {
-    // Pin the boot-selected path so policy reloads survive callers restoring
-    // their process environment immediately after the factory returns.
-    const configPath = resolveMcpConfigPath();
-    const config = loadMcpConfig();
+export async function createMcpExtension(host) {
+    const declared = host.settings.declare({
+        schema: MCP_SETTINGS_JSON_SCHEMA,
+        userSchema: MCP_USER_JSON_SCHEMA,
+    });
+    declaredByHost.set(host, declared);
+    // The one-time mcp.json import runs BEFORE the boot read (plain
+    // scoped-store file I/O — safe before the bridge binds): an upgraded
+    // install's servers are in settings when the connections are made.
+    // Core seals declarations after loading; later reads see the imported
+    // servers through the checked read. The alias fold precedes it so a
+    // legacy-alias settings file is normalized before the import decides
+    // whether servers exist.
+    await foldStoredAliases(host);
+    const imported = importMcpJsonIfPresent(host).catch((cause) => {
+        console.warn(`mcp import failed: ${errorMessage(cause)}`);
+        return 0;
+    });
+    // The checked read fills secrets from the store, so this object carries
+    // the live header/env values the connections send. Boot connections are
+    // made from this snapshot; later reads (the mcp.servers hook, OAuth
+    // routes, the settings-changed reconciliation) go through readMcpConfig.
+    await imported;
+    const config = await readMcpConfig(host);
     const tools = [];
     const clients = new Map();
     const serverExposures = new Map();
@@ -65,25 +113,17 @@ export function createMcpExtension(host) {
     let closed = false;
     let liveUserServers = config.userServers ?? "none";
     let policyRefresh = Promise.resolve();
-    let policyErrorReported = false;
     const refreshPolicy = async () => {
-        // Lifecycle events are the production file-change signal: mcp.json is
-        // operator configuration, not part of core's settings document.
+        // The userServers policy is a live settings field: every lifecycle
+        // event re-reads it through the checked settings handle. A transient
+        // malformed stored value keeps the last known-good policy (core's
+        // repair already logged it).
         let next = liveUserServers;
         try {
-            next = loadMcpConfig({
-                ...process.env,
-                [MCP_CONFIG_ENV]: configPath,
-            }).userServers ?? "none";
-            policyErrorReported = false;
+            next = (await readMcpConfig(host)).userServers ?? "none";
         }
         catch (cause) {
-            // A transient operator edit must not suppress this event's user
-            // reconciliation or discard the last known-good policy.
-            if (!policyErrorReported) {
-                policyErrorReported = true;
-                console.warn(`mcp policy reload failed for ${configPath}; keeping ${liveUserServers}: ${errorMessage(cause)}`);
-            }
+            console.warn(`mcp policy reload failed; keeping ${liveUserServers}: ${errorMessage(cause)}`);
             return;
         }
         if (next === liveUserServers)
@@ -151,10 +191,12 @@ export function createMcpExtension(host) {
             return undefined;
         }
     };
-    const oauthServer = (name) => {
+    const oauthServer = async (name) => {
         if (name === undefined)
             return undefined;
-        const server = config.servers[name];
+        // Read fresh: a server's OAuth block added in settings must work
+        // without a restart.
+        const server = (await readMcpConfig(host)).servers[name];
         if (server === undefined ||
             server.credentials === "shared" ||
             !serverEnabled(server) ||
@@ -174,7 +216,7 @@ export function createMcpExtension(host) {
                 if (user === undefined)
                     return errorResponse(400, "no_pending_flow");
                 const name = serverFromRequest(request);
-                const server = oauthServer(name);
+                const server = await oauthServer(name);
                 if (name === undefined || server === undefined) {
                     return errorResponse(404, "unknown_server");
                 }
@@ -194,7 +236,7 @@ export function createMcpExtension(host) {
                 if (user === undefined)
                     return errorResponse(400, "no_pending_flow");
                 const name = serverFromRequest(request);
-                const server = oauthServer(name);
+                const server = await oauthServer(name);
                 if (name === undefined || server === undefined) {
                     return errorResponse(404, "unknown_server");
                 }
@@ -326,18 +368,71 @@ export function createMcpExtension(host) {
         perUserTools: catalog.perUserTools,
         routes,
         userServices: catalog.userServices,
-        publishedHooks: [createToolAnnotationsHook(host, catalog, sharedAnnotations)],
+        publishedHooks: [
+            createToolAnnotationsHook(host, catalog, sharedAnnotations),
+            createMcpServersHook(host),
+        ],
         conversationCreated: activate,
         runSettled: activate,
         onSettingsChanged: async (keys, user) => {
-            if (user !== undefined &&
-                (keys.includes("servers") || keys.some((key) => Object.hasOwn(config.servers, key)))) {
-                await catalog.activate(user);
+            if (user !== undefined) {
+                const names = new Set([
+                    ...Object.keys(config.servers),
+                    ...Object.keys((await readMcpConfig(host)).servers),
+                ]);
+                if (keys.includes("servers") ||
+                    keys.some((key) => names.has(key) || key.startsWith("servers."))) {
+                    await catalog.activate(user);
+                }
+                return;
             }
-            // The host has no settings-read hook. A visit that changes nothing
-            // starts nothing; the committed write is the actionable trigger.
+            // A shared (operator) settings write: reconcile the userServers
+            // policy and re-activate known users so per-user toggles and
+            // exposure changes take effect without a restart. Boot-time
+            // shared stdio connections are a restart-apply surface.
+            await refreshPolicy();
         },
         close,
+        imported,
         ready: Promise.all(pending).then(() => undefined),
+    };
+}
+/** The `mcp.servers` published hook (Task 11): codemode asks which MCP
+ * server namespaces exist and how their tools are exposed. No input;
+ * answered FRESH from settings on every call, so a settings change needs
+ * no restart. */
+export const MCP_SERVERS_HOOK = "mcp.servers";
+const McpServersInput = Type.Object({});
+const Exposure = Type.Union([
+    Type.Literal("codemode"),
+    Type.Literal("deferred"),
+    Type.Literal("direct"),
+    Type.Literal("hidden"),
+]);
+const McpServersOutput = Type.Object({
+    servers: Type.Array(Type.Object({
+        name: Type.String(),
+        enabled: Type.Boolean(),
+        exposure: Exposure,
+        toolExposure: Type.Record(Type.String(), Exposure),
+    })),
+});
+function createMcpServersHook(host) {
+    return {
+        name: MCP_SERVERS_HOOK,
+        description: "List the configured MCP servers: name, resolved enabled flag, and exposure policy.",
+        input: McpServersInput,
+        output: McpServersOutput,
+        run: async () => {
+            const config = await readMcpConfig(host);
+            return {
+                servers: Object.entries(config.servers).map(([name, server]) => ({
+                    name,
+                    enabled: serverEnabled(server),
+                    exposure: server.exposure ?? "codemode",
+                    toolExposure: { ...(server.toolExposure ?? {}) },
+                })),
+            };
+        },
     };
 }

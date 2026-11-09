@@ -2,21 +2,22 @@
 
 Register MCP server tools as pi-durable tools, named `<server>/<tool>`.
 
-Config: the sigrun config dir's `mcp.json` (`SIGRUN_CONFIG_DIR/mcp.json`; a
-bare user install falls back to `~/.config/sigrun/mcp.json`; the
-`SIGRUN_MCP_CONFIG` env override points at any path). Each entry under
-`"servers"` names an MCP server — stdio or remote:
+Config: the extension's **settings** (`<configDir>/settings/sigrun-mcp.json`,
+edited in Settings → sigrun-mcp). Each entry under `"servers"` names an MCP
+server — stdio (`"transport": "command"`) or remote (`"transport": "url"`):
 
 ```json
 {
 	"servers": {
 		"github": {
+			"transport": "command",
 			"command": "npx",
 			"args": ["-y", "@modelcontextprotocol/server-github"],
 			"exposure": "codemode",
 			"timeout": 120
 		},
 		"search": {
+			"transport": "url",
 			"url": "https://mcp.example.test/mcp",
 			"headers": { "Authorization": "Bearer <token>" },
 			"exposure": "direct"
@@ -24,6 +25,25 @@ bare user install falls back to `~/.config/sigrun/mcp.json`; the
 	}
 }
 ```
+
+Header and env VALUES are secrets: on save they move to the secrets store
+(`servers/<name>/headers/<Header>`, `servers/<name>/env/<KEY>`) and the file
+keeps only the names. Other extensions read the registry through the
+`mcp.servers` published hook (name, resolved `enabled`, `exposure`,
+`toolExposure`), answered fresh from settings on every call.
+
+**Upgrading from `mcp.json`:** on the first boot with no `servers` in
+settings, an existing `mcp.json` (`SIGRUN_MCP_CONFIG` or
+`<configDir>/mcp.json`) is imported once — secrets into the secrets store,
+the `disabled` alias folded into `enabled`, pi's `codemode-deferred`
+normalized to `codemode` — with a log line and a primary-admin notice. The
+file is never read again; when settings already have servers, an `mcp.json`
+is ignored with a log line.
+
+The `sigrun-ext-mcp oauth <server>` CLI reads the server from the same
+settings file plus the `sigrun-mcp` secrets section (config dir resolution:
+`SIGRUN_CONFIG_DIR` → `$XDG_CONFIG_HOME/sigrun` → `~/.config/sigrun`), and
+stores tokens as `<configDir>/mcp-tokens.json` (0600).
 
 ## Server fields
 
@@ -52,9 +72,9 @@ bare user install falls back to `~/.config/sigrun/mcp.json`; the
 - `availability` — `"all"` (default) or `"opt-in"`. The per-user settings
   section stores each server's enablement as a flat boolean keyed by its
   bare server name. `"all"` starts enabled; `"opt-in"` starts disabled.
-- `enabled` (default `true`) / `disabled` — skip the server entirely. Set one,
-  never both: a server that is simultaneously on and off is a config error and
-  fails loudly.
+- `enabled` (default `true`) — skip the server entirely when `false`. The
+  legacy `disabled` alias folds into `enabled` on import/read; a server that
+  spells out both contradictorily is a config error and fails loudly.
 - `timeout` — per-request wire timeout in seconds (default `60`). A request
   that gets no reply by its deadline rejects. A server that keeps sending
   `notifications/progress` for a pending request never dies at the deadline
@@ -84,19 +104,16 @@ the next activation and reads the new token immediately.
 catalog's `credentials` and `availability` fields above. Catalog names
 starting `u_` are reserved for those user-supplied servers and rejected.
 
-When enabled, the **Your MCP servers** settings section accepts a JSON object
-under the `servers` key. Entries use the same validation rules as `mcp.json`;
+When enabled, the **Your MCP servers** part of the extension's settings page
+accepts a JSON object under the `servers` key (the declared per-user
+schema). Entries use the same validation rules as the operator registry;
 a user server name may not start with `u_`. Its tools publish only to that
 user as `u_<server>/<tool>`. `"remote"` permits URL servers and ignores stdio;
 `"all"` permits URL servers too. A live policy change reconciles every active
 user, retiring disallowed connections and removing their tools without a
-restart. Lifecycle events re-read the policy from `mcp.json`, since this
-operator file is not part of core's settings document. The contributed
-settings sections are selected at extension load: changing `none` to an
-enabled policy needs a restart to add the editor, and changing to `none`
-needs a restart to remove it; connection gating itself takes effect at the
-next lifecycle event. A catalog server literally named `servers` is rejected
-because it would shadow this settings namespace.
+restart: lifecycle events re-read the policy from settings. A catalog server
+literally named `servers` is rejected because it would shadow this settings
+namespace.
 
 **Named limitation — `all` and user-supplied stdio:** sigrun declares per-user
 services statically at load and passes no server name to `UserService.start`.

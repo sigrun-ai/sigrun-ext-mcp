@@ -3,7 +3,7 @@
  * tool name against the caller's reachable servers (own catalog first, then
  * gated shared servers, else unknown). */
 
-import { writeFile } from "node:fs/promises";
+
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -16,12 +16,12 @@ import {
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { PublishedHook } from "@sigrun/sigrun/extension";
 import { createMcpExtension, type McpWiring } from "../src/extension.js";
-import { MCP_CONFIG_ENV } from "../src/config.js";
+
 import { discoverMcpTools } from "../src/user-servers.js";
 import type { McpClient } from "../src/client.js";
 import type { McpToolDefinition, McpToolResult } from "../src/types.js";
 import { createCatalogHost, type CatalogHostDouble } from "./catalog-host.js";
-import { cleanupDir, stubConfigPath, tempDir } from "./harness.js";
+import { cleanupDir, settingsEntry, tempDir } from "./harness.js";
 
 const STUB_SERVER = join(import.meta.dirname, "stub-mcp-server.mjs");
 
@@ -161,16 +161,17 @@ async function openHook(
 ): Promise<OpenedHook> {
 	const dir = await tempDir("sigrun-mcp-annotations-");
 	const double = createCatalogHost();
-	const prior = process.env[MCP_CONFIG_ENV];
-	process.env[MCP_CONFIG_ENV] = stubConfigPath(dir);
-	let wiring: McpWiring;
-	try {
-		await writeFile(stubConfigPath(dir), JSON.stringify(config), "utf8");
-		wiring = createMcpExtension(double.host);
-	} finally {
-		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
-		else process.env[MCP_CONFIG_ENV] = prior;
-	}
+	const parsed = config as { servers?: Record<string, Record<string, unknown>>; userServers?: string };
+	double.setSharedSettings({
+		...(parsed.userServers === undefined ? {} : { userServers: parsed.userServers }),
+		servers: Object.fromEntries(
+			Object.entries(parsed.servers ?? {}).map(([name, server]) => [
+				name,
+				settingsEntry(server),
+			]),
+		),
+	});
+	const wiring = await createMcpExtension(double.host);
 	if (wiring.perUserTools) double.declarePerUserTools();
 	double.registerServices(wiring.userServices);
 	const hook = wiring.publishedHooks.find(

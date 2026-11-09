@@ -39,4 +39,4 @@ import { createMcpExtension, type McpWiring } from "./extension.js";
  * loader does not pass a host to optional/defaulted (length-zero) factories. */
 export default createMcpExtension satisfies (
 	host: import("./user-servers.js").SigrunHost,
-) => McpWiring;
+) => Promise<McpWiring>;

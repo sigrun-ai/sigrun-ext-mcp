@@ -1,18 +1,21 @@
 /**
- * The MCP config store: reads `mcp.json` — the MCP server registry.
+ * MCP server configuration (settings rework, Task 11): the operator's
+ * server registry lives in the extension's SETTINGS
+ * (`<configDir>/settings/sigrun-mcp.json`, declared through
+ * `host.settings.declare` — see settings-schema.ts). `parseMcpSettings`
+ * turns the checked settings object (defaults applied, secrets filled by
+ * core) into the `McpConfig` the wiring consumes, applying the rules the
+ * schema cannot express.
  *
- * Resolution order (ruling 2):
- *   1. `SIGRUN_MCP_CONFIG` env override — an explicit path to an mcp.json
- *   2. `~/.config/sigrun/mcp.json` (the sigrun config dir)
- *
- * Shape:
- *   { "servers": { "<name>": {
- *       "command": string, "args": string[], "env"?: {...}, "disabled"?: boolean
- *   } } }
+ * The `mcp.json` reader survives ONLY for the one-time import
+ * (`importMcpJson`, extension.ts): an install upgraded from the file-based
+ * config gets its servers moved into settings once, and the file is never
+ * read again.
  *
  * Fail-loud on malformed config: unparseable JSON or a wrong-shaped body
- * throws a clear error naming the path (the loader turns a throwing factory
- * into quarantine semantics — this package never silently degrades).
+ * throws a clear error naming the source (the loader turns a throwing
+ * factory into quarantine semantics — this package never silently
+ * degrades).
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -523,9 +526,9 @@ function parseOauthEntry(
 }
 
 /**
- * Read and parse the config from the resolved path. A missing file is an
- * empty config (zero servers — the extension installs and contributes
- * nothing); an existing-but-malformed file throws.
+ * Read and parse the legacy `mcp.json` from the resolved path. A missing
+ * file is an empty config; an existing-but-malformed file throws. Kept
+ * ONLY for the one-time import — production reads settings.
  */
 export function loadMcpConfig(
 	env: NodeJS.ProcessEnv = process.env,
@@ -534,4 +537,150 @@ export function loadMcpConfig(
 	if (!existsSync(path)) return { servers: {} };
 	const text = readFileSync(path, "utf8");
 	return parseMcpConfig(text, path);
+}
+
+/**
+ * Resolve sigrun's config dir the way core does (stores.ts tiers):
+ * `SIGRUN_CONFIG_DIR` verbatim → `$XDG_CONFIG_HOME/sigrun` →
+ * `~/.config/sigrun`. The CLI reads settings from here; the extension
+ * itself never calls this (its stores are host-scoped).
+ */
+export function resolveSigrunConfigDir(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const explicit = env.SIGRUN_CONFIG_DIR;
+	if (explicit !== undefined && explicit !== "") return explicit;
+	const xdg = env.XDG_CONFIG_HOME;
+	if (xdg !== undefined && xdg !== "") return join(xdg, "sigrun");
+	return resolve(homedir(), ".config", "sigrun");
+}
+
+/** The built-in's settings slug (core src/harness/builtins.ts). */
+export const MCP_SETTINGS_SLUG = "sigrun-mcp";
+
+/**
+ * Read the operator's MCP settings from disk for the CLI: the declared
+ * settings file plus the secrets section, with the secret values filled
+ * back into the header/env slots (the file carries empty-string
+ * placeholders for them). Absent files mean an empty registry.
+ */
+export function readMcpSettingsForCli(
+	env: NodeJS.ProcessEnv = process.env,
+): McpConfig {
+	const configDir = resolveSigrunConfigDir(env);
+	const settingsPath = join(configDir, "settings", `${MCP_SETTINGS_SLUG}.json`);
+	const settings = existsSync(settingsPath)
+		? (JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>)
+		: {};
+	const secretsPath = join(configDir, "secrets.json");
+	const allSecrets = existsSync(secretsPath)
+		? (JSON.parse(readFileSync(secretsPath, "utf8")) as Record<string, unknown>)
+		: {};
+	const section = allSecrets[MCP_SETTINGS_SLUG];
+	const secrets = isRecord(section) ? section : {};
+	const servers = isRecord(settings.servers) ? { ...settings.servers } : {};
+	for (const [name, entry] of Object.entries(servers)) {
+		if (!isRecord(entry)) continue;
+		const next: Record<string, unknown> = { ...entry };
+		for (const field of ["headers", "env"] as const) {
+			const table = next[field];
+			if (!isRecord(table)) continue;
+			const filled: Record<string, unknown> = { ...table };
+			for (const key of Object.keys(filled)) {
+				const value = secrets[`servers/${name}/${field}/${key}`];
+				if (typeof value === "string" && value !== "") filled[key] = value;
+			}
+			next[field] = filled;
+		}
+		servers[name] = next;
+	}
+	return parseMcpSettings({ ...settings, servers }, settingsPath);
+}
+
+/**
+ * Normalize legacy spellings in a raw stored settings object BEFORE the
+ * checked read (settings rework, Task 11): the `disabled` alias folds
+ * into `enabled` and pi's `codemode-deferred` exposure alias normalizes
+ * to `codemode`. Running ahead of schema validation is load-bearing: the
+ * schema cannot spell the aliases, so an unnormalized stored value would
+ * otherwise be "repaired" away (a codemode-deferred server would flip to
+ * the default exposure, or be dropped outright).
+ */
+export function normalizeMcpSettingsAliases(
+	settings: Record<string, unknown>,
+): Record<string, unknown> {
+	if (!isRecord(settings.servers)) return settings;
+	return {
+		...settings,
+		servers: Object.fromEntries(
+			Object.entries(settings.servers).map(([name, entry]) => [
+				name,
+				isRecord(entry) ? normalizeServerAliases(entry) : entry,
+			]),
+		),
+	};
+}
+
+/**
+ * Normalize one server entry's legacy spellings: `disabled` folds into
+ * `enabled`; `codemode-deferred` normalizes to `codemode`. The explicit
+ * enabled+disabled contradiction stays a config error (both spellings
+ * survive for the parser's check when both were written).
+ */
+function normalizeServerAliases(entry: Record<string, unknown>): Record<string, unknown> {
+	let next = entry;
+	if (next.disabled !== undefined) {
+		const { disabled, ...rest } = next;
+		next = {
+			...rest,
+			...(next.enabled === undefined
+				? { enabled: disabled === true ? false : true }
+				: // Keep the alias for the contradiction check when both were
+					// spelled out: enabled+disabled agreeing is still a lie.
+					{ disabled }),
+		};
+	}
+	if (next.exposure === "codemode-deferred") next = { ...next, exposure: "codemode" };
+	if (isRecord(next.toolExposure)) {
+		next = {
+			...next,
+			toolExposure: Object.fromEntries(
+				Object.entries(next.toolExposure).map(([key, value]) => [
+					key,
+					value === "codemode-deferred" ? "codemode" : value,
+				]),
+			),
+		};
+	}
+	return next;
+}
+
+/**
+ * Parse the checked settings object into the runtime config. The schema
+ * read already applied defaults and repaired malformed values; this pass
+ * enforces the cross-field rules (shared authority, users allowlist,
+ * enabled/disabled agreement, OAuth shape) and normalizes the legacy
+ * spellings. `transport` is inferred when absent (`url` present → url).
+ *
+ * `source` names the settings scope in error messages (e.g. "settings"
+ * or "user settings servers").
+ */
+export function parseMcpSettings(
+	settings: Record<string, unknown>,
+	source = "settings",
+): McpConfig {
+	// Round-trip through the legacy wire parser: it owns every cross-field
+	// rule and error wording. The settings form carries the transport
+	// discriminator; the legacy shape is recovered by dropping it.
+	const raw: Record<string, unknown> = { ...settings };
+	if (isRecord(raw.servers)) {
+		raw.servers = Object.fromEntries(
+			Object.entries(raw.servers).map(([name, entry]) => {
+				if (!isRecord(entry)) return [name, entry];
+				const { transport: _transport, ...rest } = normalizeServerAliases(entry);
+				return [name, rest];
+			}),
+		);
+	}
+	return parseMcpConfig(JSON.stringify(raw), source);
 }
