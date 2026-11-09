@@ -211,22 +211,24 @@ export async function createMcpExtension(host) {
     const postImportNotice = async () => {
         if (!importNoticePending)
             return;
+        // Claim BEFORE the first await: ready and a lifecycle activation can
+        // overlap in the same boot, and only one may post. A failure restores
+        // the pending flag so the next activation can retry.
+        importNoticePending = false;
         try {
             const admin = (await host.users.list()).find((user) => user.admin === true)?.user;
-            if (admin === undefined) {
-                importNoticePending = false;
+            if (admin === undefined)
                 return;
-            }
             await host.notices.post({
                 user: admin,
                 key: MCP_IMPORT_NOTICE_KEY,
                 ...importedResult.notice,
             });
-            importNoticePending = false;
         }
         catch (cause) {
-            // Keep it pending: the next activation retries after a bridge
+            // Restore the claim: the next activation retries after a bridge
             // failure. Log once so a headless process does not spam.
+            importNoticePending = true;
             if (!importNoticeErrorReported) {
                 importNoticeErrorReported = true;
                 console.warn(`mcp import notice failed: ${errorMessage(cause)}`);

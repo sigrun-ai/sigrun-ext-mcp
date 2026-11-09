@@ -49,12 +49,23 @@ export function resolveMcpTokenPath(
 /** Move the pre-settings-rework store (beside the resolved mcp.json) to
  * the config-dir location ONCE, on first read/write. An existing new
  * store wins; otherwise the legacy file is renamed, preserving 0600 and
- * every token. Same-filesystem config roots make this atomic. */
+ * every token. A cross-filesystem rename (EXDEV) or any other migration
+ * failure logs once and leaves the legacy file in place — token access
+ * must never fail because the optional migration could not complete. */
+let legacyTokenMigrationWarningShown = false;
 function migrateLegacyTokenStore(env: NodeJS.ProcessEnv): void {
 	const target = resolveMcpTokenPath(env);
 	const legacy = join(dirname(resolveMcpConfigPath(env)), "mcp-tokens.json");
 	if (legacy === target || existsSync(target) || !existsSync(legacy)) return;
-	renameSync(legacy, target);
+	try {
+		renameSync(legacy, target);
+	} catch (cause) {
+		if (legacyTokenMigrationWarningShown) return;
+		legacyTokenMigrationWarningShown = true;
+		console.warn(
+			`mcp token migration failed; leaving ${legacy} in place: ${cause instanceof Error ? cause.message : String(cause)}`,
+		);
+	}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

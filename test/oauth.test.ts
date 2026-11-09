@@ -912,6 +912,55 @@ test("the CLI refuses per-user OAuth and names the extension start route", async
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+test("a failed legacy token rename leaves the file and never fails token reads", async () => {
+	const dir = await tempDir("sigrun-mcp-token-exdev-");
+	const legacyDir = await tempDir("sigrun-mcp-token-exdev-legacy-");
+	try {
+		const legacy = join(legacyDir, "mcp-tokens.json");
+		await writeFile(
+			legacy,
+			JSON.stringify({
+				acme: {
+					access_token: "legacy-token",
+					token_type: "Bearer",
+					obtained_at: 1,
+				},
+			}),
+			{ mode: 0o600 },
+		);
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		// ESM namespaces are not configurable, so spy on the module's
+		// function through the mocked module boundary.
+		vi.doMock("node:fs", async (importOriginal) => {
+			const actual = await importOriginal<typeof import("node:fs")>();
+			return {
+				...actual,
+				renameSync: () => {
+					throw Object.assign(new Error("cross-device link not permitted"), { code: "EXDEV" });
+				},
+			};
+		});
+		vi.resetModules();
+		const tokens = await import("../src/tokens.js");
+		const env = {
+			SIGRUN_CONFIG_DIR: dir,
+			SIGRUN_MCP_CONFIG: join(legacyDir, "mcp.json"),
+		};
+		// Both public entry points stay non-throwing; one warning total.
+		expect(tokens.loadMcpTokens(env)).toEqual({});
+		expect(tokens.loadMcpTokens(env)).toEqual({});
+		expect(warning).toHaveBeenCalledTimes(1);
+		expect(warning.mock.calls[0]?.[0]).toContain("leaving");
+		expect(existsSync(legacy)).toBe(true);
+		expect(existsSync(join(dir, "mcp-tokens.json"))).toBe(false);
+		vi.doUnmock("node:fs");
+		vi.resetModules();
+	} finally {
+		await cleanupDir(dir);
+		await cleanupDir(legacyDir);
+	}
+});
+
 test("a legacy token store beside mcp.json is renamed into the config dir", async () => {
 	const dir = await tempDir("sigrun-mcp-token-migration-");
 	const legacyDir = await tempDir("sigrun-mcp-token-legacy-");

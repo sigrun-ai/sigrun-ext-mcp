@@ -155,6 +155,35 @@ describe("the mcp.json import", () => {
 		expect(wiring.extension.tools?.map((tool) => tool.name)).toContain("local/getenv");
 	});
 
+	test("overlapping ready and activation post the import notice once", async () => {
+		const dir = await importDir();
+		const path = join(dir, "mcp.json");
+		await writeFile(
+			path,
+			JSON.stringify({
+				servers: { acme: { url: "https://acme.example.invalid/mcp", disabled: true } },
+			}),
+			"utf8",
+		);
+		withConfigEnv(path);
+		const double = createCatalogHost();
+		cleanups.push(() => double.close());
+		const wiring = await openWithImport(double);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		double.host.notices.post = async (input) => {
+			await gate;
+			double.shared.notices.push(input);
+			return { id: "notice-1" };
+		};
+		const ready = wiring.ready;
+		const activated = wiring.runSettled({ conversationId: 1 as never, owner: "alice" });
+		// Both callers are now inside postImportNotice's await window.
+		release();
+		await Promise.all([ready, activated]);
+		expect(double.shared.notices).toHaveLength(1);
+	});
+
 	test("import runs once", async () => {
 		const dir = await importDir();
 		const path = join(dir, "mcp.json");
