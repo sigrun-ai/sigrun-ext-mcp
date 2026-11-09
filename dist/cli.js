@@ -17,7 +17,7 @@
  * flow / 5-minute timeout).
  */
 import { createInterface } from "node:readline";
-import { isStdioServer, loadMcpConfig, MCP_CONFIG_ENV, } from "./config.js";
+import { isStdioServer, readMcpSettingsForCli, } from "./config.js";
 import { startOauth } from "./oauth.js";
 import { resolveMcpTokenPath } from "./tokens.js";
 /** The flow timeout (matches startOauth's default; explicit so the user's
@@ -26,9 +26,10 @@ const TIMEOUT_MS = 5 * 60_000;
 /** Print the usage banner. */
 function usage(out) {
     out.write("usage: sigrun-ext-mcp oauth <server> [--paste]\n");
-    out.write(`reads the MCP config (env ${MCP_CONFIG_ENV} or ~/.config/sigrun/mcp.json);\n` +
-        `the named server needs an oauth block; the token is stored beside the\n` +
-        `config as mcp-tokens.json (0600)\n`);
+    out.write("reads the server from sigrun's settings\n" +
+        "(<configDir>/settings/sigrun-mcp.json + the sigrun-mcp secrets section);\n" +
+        "the named server needs an oauth block; the token is stored in the\n" +
+        "config dir as mcp-tokens.json (0600)\n");
 }
 /** Parse argv minimally: `oauth <server> [--paste]`. */
 export function parseCliArgs(argv) {
@@ -44,10 +45,10 @@ export function parseCliArgs(argv) {
     }
     return { command: "oauth", server: positional[0], paste };
 }
-/** Load the config, turning a malformed config into exit-1 (not a crash). */
-function loadMcpConfigSafe(stderr) {
+/** Load the settings, turning malformed settings into exit-1 (not a crash). */
+function loadMcpSettingsSafe(stderr) {
     try {
-        return loadMcpConfig();
+        return readMcpSettingsForCli();
     }
     catch (cause) {
         stderr.write(`error: ${cause instanceof Error ? cause.message : String(cause)}\n`);
@@ -65,10 +66,10 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
         io.stderr.write(`error: ${cause instanceof Error ? cause.message : String(cause)}\n`);
         return 1;
     }
-    const config = loadMcpConfigSafe(io.stderr);
+    const config = loadMcpSettingsSafe(io.stderr);
     const server = config.servers[parsed.server];
     if (server === undefined) {
-        io.stderr.write(`error: no server named "${parsed.server}" in the MCP config\n`);
+        io.stderr.write(`error: no server named "${parsed.server}" in the MCP settings\n`);
         return 1;
     }
     if (server.credentials !== "shared") {
@@ -76,7 +77,7 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
         return 1;
     }
     if (!isStdioServer(server) || server.oauth === undefined) {
-        io.stderr.write(`error: server "${parsed.server}" has no oauth block in the MCP config\n`);
+        io.stderr.write(`error: server "${parsed.server}" has no oauth block in the MCP settings\n`);
         return 1;
     }
     const flow = await startOauth(parsed.server, server.oauth, {

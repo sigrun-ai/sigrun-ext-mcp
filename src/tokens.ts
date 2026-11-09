@@ -1,7 +1,8 @@
 /**
- * The OAuth token store (ruling 2): a JSON file BESIDE the resolved mcp.json
- * — `<resolved-config-dir>/mcp-tokens.json` — so the `SIGRUN_MCP_CONFIG`
- * override relocates tokens with config (a test / pod override moves both).
+ * The OAuth token store: `<sigrun-config-dir>/mcp-tokens.json`. Stores
+ * from before the settings rework lived beside the resolved mcp.json;
+ * the first read/write renames that legacy file here when no new store
+ * exists yet.
  *
  * Shape (one entry per configured server name):
  *   { "<server-name>": {
@@ -14,9 +15,15 @@
  * the config store).
  */
 
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
-import { resolveMcpConfigPath } from "./config.js";
+import { resolveMcpConfigPath, resolveSigrunConfigDir } from "./config.js";
 
 /** One stored token (the AS's token-endpoint response, normalized). */
 export interface McpStoredToken {
@@ -30,12 +37,35 @@ export interface McpStoredToken {
 /** The whole token store: server name → token. */
 export type McpTokenStore = Record<string, McpStoredToken>;
 
-/** Resolve the token-store path for a given environment (beside config). */
+/** Resolve the token-store path for a given environment (in the sigrun
+ * config dir — settings rework, Task 11: mcp.json is retired, so tokens
+ * live beside the settings files). */
 export function resolveMcpTokenPath(
 	env: NodeJS.ProcessEnv = process.env,
 ): string {
-	const configPath = resolveMcpConfigPath(env);
-	return join(dirname(configPath), "mcp-tokens.json");
+	return join(resolveSigrunConfigDir(env), "mcp-tokens.json");
+}
+
+/** Move the pre-settings-rework store (beside the resolved mcp.json) to
+ * the config-dir location ONCE, on first read/write. An existing new
+ * store wins; otherwise the legacy file is renamed, preserving 0600 and
+ * every token. A cross-filesystem rename (EXDEV) or any other migration
+ * failure logs once and leaves the legacy file in place — token access
+ * must never fail because the optional migration could not complete. */
+let legacyTokenMigrationWarningShown = false;
+function migrateLegacyTokenStore(env: NodeJS.ProcessEnv): void {
+	const target = resolveMcpTokenPath(env);
+	const legacy = join(dirname(resolveMcpConfigPath(env)), "mcp-tokens.json");
+	if (legacy === target || existsSync(target) || !existsSync(legacy)) return;
+	try {
+		renameSync(legacy, target);
+	} catch (cause) {
+		if (legacyTokenMigrationWarningShown) return;
+		legacyTokenMigrationWarningShown = true;
+		console.warn(
+			`mcp token migration failed; leaving ${legacy} in place: ${cause instanceof Error ? cause.message : String(cause)}`,
+		);
+	}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -114,6 +144,7 @@ export function parseMcpTokenStore(
 export function loadMcpTokens(
 	env: NodeJS.ProcessEnv = process.env,
 ): McpTokenStore {
+	migrateLegacyTokenStore(env);
 	const path = resolveMcpTokenPath(env);
 	if (!existsSync(path)) return {};
 	return parseMcpTokenStore(readFileSync(path, "utf8"), path);
@@ -125,6 +156,7 @@ export function saveMcpTokens(
 	store: McpTokenStore,
 	env: NodeJS.ProcessEnv = process.env,
 ): void {
+	migrateLegacyTokenStore(env);
 	const path = resolveMcpTokenPath(env);
 	writeFileSync(path, JSON.stringify(store, null, "\t") + "\n", {
 		mode: 0o600,

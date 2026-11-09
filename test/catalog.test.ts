@@ -4,10 +4,9 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { expect, test } from "vitest";
 import { defineDoc, type ConversationId, type ToolRegistration } from "@earendil-works/pi-durable";
-import { createMcpExtension } from "../src/extension.js";
-import { MCP_CONFIG_ENV } from "../src/config.js";
+import { createMcpExtension, type McpWiring } from "../src/extension.js";
 import { createCatalogHost, type CatalogHostDouble } from "./catalog-host.js";
-import { cleanupDir, stubConfigPath, tempDir, writeConfig } from "./harness.js";
+import { cleanupDir, settingsEntry, tempDir } from "./harness.js";
 
 const STUB_SERVER = join(import.meta.dirname, "stub-mcp-server.mjs");
 const HANG_SERVER = join(import.meta.dirname, "stub-hang-server.mjs");
@@ -23,7 +22,7 @@ const SessionMetaDoc = defineDoc<{ owner?: string }>({
 });
 
 interface OpenedCatalog {
-	readonly wiring: ReturnType<typeof createMcpExtension>;
+	readonly wiring: McpWiring;
 	readonly double: CatalogHostDouble;
 }
 
@@ -32,16 +31,16 @@ async function openCatalog(
 ): Promise<OpenedCatalog & { close(): Promise<void> }> {
 	const dir = await tempDir("sigrun-mcp-catalog-");
 	const double = createCatalogHost();
-	const prior = process.env[MCP_CONFIG_ENV];
-	process.env[MCP_CONFIG_ENV] = stubConfigPath(dir);
-	let wiring: ReturnType<typeof createMcpExtension>;
-	try {
-		await writeConfig(stubConfigPath(dir), servers);
-		wiring = createMcpExtension(double.host);
-	} finally {
-		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
-		else process.env[MCP_CONFIG_ENV] = prior;
-	}
+	// The registry lives in shared settings; no legacy file exists.
+	double.setSharedSettings({
+		servers: Object.fromEntries(
+			Object.entries(servers).map(([name, server]) => [
+				name,
+				settingsEntry(server as Record<string, unknown>),
+			]),
+		),
+	});
+	const wiring = await createMcpExtension(double.host);
 	if (wiring.perUserTools) double.declarePerUserTools();
 	double.registerServices(wiring.userServices);
 	return {
@@ -371,41 +370,6 @@ test("a failed per-user connection does not stop another user", async () => {
 			opened.wiring.runSettled(event(opened, "bob")),
 		).resolves.toBeUndefined();
 		expect(names(opened.double.userTools.get("bob"))).toContain("acme/echo");
-	} finally {
-		await opened.close();
-	}
-});
-
-test("the settings surface declares flat toggles and shared-authority help", async () => {
-	const opened = await openCatalog({
-		acme: user({ availability: "opt-in" }),
-		shared: shared({ sharedAuthority: "Synthetic shared test authority." }),
-	});
-	try {
-		expect(opened.wiring.surfaces.settings).toHaveLength(1);
-		expect("settingsSections" in opened.wiring).toBe(false);
-		const definition = opened.wiring.surfaces.settings[0];
-		expect(definition.scope).toBe("user");
-		expect(definition.form).toMatchObject({
-			root: {
-				children: [
-					expect.objectContaining({ name: "acme", default: false }),
-					expect.objectContaining({
-						name: "shared",
-						default: true,
-						help: expect.stringContaining("Synthetic shared test authority"),
-					}),
-				],
-			},
-		});
-		const sharedToggle = (definition.form.root.children as { help?: string }[])
-			.find((child) => child.help !== undefined);
-		expect(sharedToggle?.help).toBe(
-			"Synthetic shared test authority. Shared MCP servers hand every permitted user's agent the admin's credential for that service.",
-		);
-		for (const child of definition.form.root.children as { name?: string }[]) {
-			expect(child.name).not.toMatch(/[./]/);
-		}
 	} finally {
 		await opened.close();
 	}

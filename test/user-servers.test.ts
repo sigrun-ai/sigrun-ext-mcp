@@ -11,8 +11,6 @@ import {
 } from "../src/user-servers.js";
 import { createCatalogHost } from "./catalog-host.js";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { validateTree } from "@sigrun/sigrun/blocks";
-import { assertFreshCoreBlocks } from "./core-blocks-freshness.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -105,7 +103,7 @@ describe("user-supplied MCP server lifecycle", () => {
 		const before = process.listenerCount("exit");
 		const double = createCatalogHost();
 		cleanups.push(() => double.close());
-		const wiring = createMcpExtension(double.host);
+		const wiring = await createMcpExtension(double.host);
 		if (wiring.perUserTools) double.declarePerUserTools();
 		cleanups.push(() => wiring.close());
 		expect(process.listenerCount("exit")).toBe(before + 1);
@@ -217,20 +215,6 @@ describe("user-supplied MCP server lifecycle", () => {
 		expect(warning).toHaveBeenCalledWith(expect.stringMatching(/user \"alice\".*not valid JSON/));
 	});
 
-	it("passes the contributed form through core's real settings validator", () => {
-		assertFreshCoreBlocks();
-		const double = createCatalogHost();
-		cleanups.push(() => double.close());
-		const catalog = createUserCatalog(double.host, {}, "remote");
-		double.declarePerUserTools();
-		cleanups.push(() => catalog.close());
-		const section = catalog.settings.find((item) => item.id === "user-servers");
-		expect(section?.scope).toBe("user");
-		expect(validateTree(section?.form, {
-			placement: "settings",
-			handlers: new Set(["save", "submit"]),
-		})).toMatchObject({ ok: true });
-	});
 
 	it("keeps URL tools across all to remote and retires them at none", async () => {
 		// The all-mode stdio refusal above is intentional; this URL fixture
@@ -239,21 +223,12 @@ describe("user-supplied MCP server lifecycle", () => {
 		cleanups.push(remote.close);
 		const dir = await mkdtemp(join(tmpdir(), "acme-user-servers-"));
 		cleanups.push(() => rm(dir, { recursive: true, force: true }));
-		const path = join(dir, "mcp.json");
-		await writeFile(path, JSON.stringify({ servers: {}, userServers: "all" }));
 		const double = createCatalogHost();
 		cleanups.push(() => double.close());
+		double.setSharedSettings({ userServers: "all" });
 		double.setSettings("alice", settings({ acme: { url: remote.url } }));
 		double.setSettings("bob", settings({ acme: { url: remote.url } }));
-		const prior = process.env.SIGRUN_MCP_CONFIG;
-		process.env.SIGRUN_MCP_CONFIG = path;
-		let wiring: ReturnType<typeof createMcpExtension>;
-		try {
-			wiring = createMcpExtension(double.host);
-		} finally {
-			if (prior === undefined) delete process.env.SIGRUN_MCP_CONFIG;
-			else process.env.SIGRUN_MCP_CONFIG = prior;
-		}
+		const wiring = await createMcpExtension(double.host);
 		if (wiring.perUserTools) double.declarePerUserTools();
 		cleanups.push(() => wiring.close());
 		await Promise.all([
@@ -263,14 +238,14 @@ describe("user-supplied MCP server lifecycle", () => {
 		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
 		expect(double.userTools.get("bob")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
 		const before = remote.connections();
-		await writeFile(path, JSON.stringify({ servers: {}, userServers: "remote" }));
+		double.setSharedSettings({ userServers: "remote" });
 		await wiring.runSettled({ conversationId: ROOT_CONVERSATION_ID, owner: "alice" });
 		expect(double.userTools.get("alice")?.map((item) => item.name)).toEqual(["u_acme/ping"]);
 		expect(double.userTools.get("bob")?.map((item) => item.name)).toEqual(["u_acme/ping"]);
 		expect(remote.connections()).toBe(before);
 		const tool = double.userTools.get("alice")?.[0];
 		expect(tool).toBeDefined();
-		await writeFile(path, JSON.stringify({ servers: {}, userServers: "none" }));
+		double.setSharedSettings({ userServers: "none" });
 		await wiring.runSettled({ conversationId: ROOT_CONVERSATION_ID, owner: "alice" });
 		expect(double.userTools.get("alice")).toEqual([]);
 		expect(double.userTools.get("bob")).toEqual([]);
@@ -337,26 +312,17 @@ describe("user-supplied MCP server lifecycle", () => {
 		cleanups.push(remote.close);
 		const dir = await mkdtemp(join(tmpdir(), "acme-policy-error-"));
 		cleanups.push(() => rm(dir, { recursive: true, force: true }));
-		const path = join(dir, "mcp.json");
-		await writeFile(path, JSON.stringify({ servers: {}, userServers: "remote" }));
 		const double = createCatalogHost();
 		cleanups.push(() => double.close());
+		double.setSharedSettings({ userServers: "remote" });
 		double.setSettings("alice", settings({ acme: { url: remote.url } }));
-		const prior = process.env.SIGRUN_MCP_CONFIG;
-		process.env.SIGRUN_MCP_CONFIG = path;
-		let wiring: ReturnType<typeof createMcpExtension>;
-		try {
-			wiring = createMcpExtension(double.host);
-		} finally {
-			if (prior === undefined) delete process.env.SIGRUN_MCP_CONFIG;
-			else process.env.SIGRUN_MCP_CONFIG = prior;
-		}
+		const wiring = await createMcpExtension(double.host);
 		if (wiring.perUserTools) double.declarePerUserTools();
 		cleanups.push(() => wiring.close());
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-		await writeFile(path, "{malformed");
+		// A malformed stored policy value keeps the last known-good policy;
+		// activation still completes instead of tearing down live servers.
+		double.setSharedSettings({ userServers: "bogus" });
 		await wiring.runSettled({ conversationId: ROOT_CONVERSATION_ID, owner: "alice" });
 		expect(double.userTools.get("alice")?.map((tool) => tool.name)).toEqual(["u_acme/ping"]);
-		expect(warning).toHaveBeenCalledWith(expect.stringContaining(path));
 	});
 });

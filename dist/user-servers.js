@@ -4,7 +4,7 @@
 import { Type } from "typebox";
 import { defineTool, } from "@earendil-works/pi-durable";
 import { connectMcpServer, } from "./client.js";
-import { isStdioServer, parseMcpConfig, resolveToolExposure, serverEnabled, } from "./config.js";
+import { isStdioServer, parseMcpSettings, resolveToolExposure, serverEnabled, } from "./config.js";
 /** Copy only the four boolean hint values; anything else is untrusted noise. */
 function keepBooleanAnnotations(annotations) {
     if (annotations === undefined)
@@ -199,14 +199,10 @@ function userServersFromSettings(settings) {
             throw new Error(`mcp config user settings servers is not valid JSON: ${errorMessage(cause)}`);
         }
     }
-    // Reuse the wire validator so a user cannot supply fields or transports
-    // that the operator registry would reject under a different code path.
-    return parseMcpConfig(JSON.stringify({ servers: value }), "user settings servers").servers;
-}
-function sharedAuthorityHelp(reason) {
-    const authority = reason?.trim() ?? "Shared authority was not stated.";
-    const sentence = /[.!?]$/.test(authority) ? authority : `${authority}.`;
-    return `${sentence} Shared MCP servers hand every permitted user's agent the admin's credential for that service.`;
+    // Reuse the settings parser so a user cannot supply fields or
+    // transports that the operator registry would reject under a different
+    // code path.
+    return parseMcpSettings({ servers: value }, "user settings servers").servers;
 }
 export function createUserCatalog(host, servers, initialMode = "none") {
     let mode = initialMode;
@@ -376,61 +372,9 @@ export function createUserCatalog(host, servers, initialMode = "none") {
         state.refresh = current;
         await current;
     };
-    const enabledServers = Object.entries(servers).filter(([, server]) => serverEnabled(server));
-    const settings = mode === "none" ? [] : [{
-            id: "user-servers",
-            title: "Your MCP servers",
-            scope: "user",
-            form: {
-                v: 1,
-                root: {
-                    type: "form",
-                    id: "mcp-user-servers-form",
-                    bind: "/settings",
-                    mode: "submit",
-                    onSubmit: "save",
-                    children: [{
-                            type: "longtext",
-                            name: "servers",
-                            label: "MCP server definitions",
-                            default: "{}",
-                            syntax: "code",
-                            lang: "json",
-                            help: "Define MCP servers as a JSON object. Remote servers use url; stdio availability depends on the operator's userServers policy.",
-                        }],
-                },
-            },
-        }];
-    if (enabledServers.length > 0) {
-        settings.push({
-            id: "catalog",
-            title: "MCP servers",
-            scope: "user",
-            form: {
-                v: 1,
-                root: {
-                    type: "form",
-                    id: "mcp-catalog-form",
-                    bind: "/settings",
-                    mode: "submit",
-                    onSubmit: "save",
-                    children: enabledServers.map(([name, server]) => ({
-                        type: "toggle",
-                        name,
-                        label: name,
-                        default: server.availability !== "opt-in",
-                        ...(server.credentials === "shared"
-                            ? { help: sharedAuthorityHelp(server.sharedAuthority) }
-                            : {}),
-                    })),
-                },
-            },
-        });
-    }
     return {
         perUserTools: true,
         userServices,
-        settings,
         activate,
         retire,
         reconcileAll,

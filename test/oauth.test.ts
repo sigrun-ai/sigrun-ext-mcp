@@ -17,6 +17,7 @@
  * behavior, and config backward compat.
  */
 
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -33,7 +34,7 @@ import { startOauth, extractCode, buildAuthorizeUrl, createUserOauthFlows } from
 import { createMcpExtension, type McpWiring } from "../src/extension.js";
 import { parseCliArgs, runCli } from "../src/cli.js";
 import { createCatalogHost, type CatalogHostDouble } from "./catalog-host.js";
-import { cleanupDir, stubConfigPath, tempDir } from "./harness.js";
+import { cleanupDir, settingsEntry, stubConfigPath, tempDir } from "./harness.js";
 
 // ---------------------------------------------------------------- stub AS
 
@@ -143,7 +144,44 @@ async function oauthConfigDir(
 		}),
 		"utf8",
 	);
-	return { dir, env: { [MCP_CONFIG_ENV]: configPath } };
+	return {
+		dir,
+		env: { [MCP_CONFIG_ENV]: configPath, SIGRUN_CONFIG_DIR: dir },
+	};
+}
+
+/** A temp sigrun config dir with the OAuth server in SETTINGS (the
+ * settings-rework shape the CLI reads). */
+async function oauthSettingsDir(
+	asUrl: string,
+	serverName = "stub",
+	overrides: Record<string, unknown> = {},
+): Promise<{ readonly dir: string }> {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-mcp-cli-settings-"));
+	await (await import("node:fs/promises")).mkdir(join(dir, "settings"), {
+		recursive: true,
+	});
+	await writeFile(
+		join(dir, "settings", "sigrun-mcp.json"),
+		JSON.stringify({
+			servers: {
+				[serverName]: {
+					transport: "command",
+					command: process.execPath,
+					args: ["stub-mcp-server.mjs"],
+					oauth: {
+						authorizeUrl: `${asUrl}/authorize`,
+						tokenUrl: `${asUrl}/token`,
+						clientId: "stub-client",
+						scopes: ["read", "write"],
+					},
+					...overrides,
+				},
+			},
+		}),
+		"utf8",
+	);
+	return { dir };
 }
 
 // ------------------------------------------------------------------ tests
@@ -206,7 +244,7 @@ test("a stub OAuth flow completes with a pasted URL (the testable line)", async 
 
 		// The token landed in the store beside the config, 0600.
 		const tokenPath = resolveMcpTokenPath(env);
-		expect(tokenPath).toBe(join(dirname(env[MCP_CONFIG_ENV]!), "mcp-tokens.json"));
+		expect(tokenPath).toBe(join(dir, "mcp-tokens.json"));
 		const stored = loadMcpTokens(env);
 		expect(stored.stub.access_token).toBe(token.access_token);
 		const mode = (await stat(tokenPath)).mode & 0o777;
@@ -407,22 +445,16 @@ async function openRouteFixture(
 	const as = await stubAs("alice-code");
 	const dir = await tempDir("sigrun-mcp-user-oauth-");
 	const double = createCatalogHost({ stopOnLastRelease });
-	const prior = process.env[MCP_CONFIG_ENV];
-	process.env[MCP_CONFIG_ENV] = stubConfigPath(dir);
-	let wiring: McpWiring;
-	try {
-		await writeFile(
-			stubConfigPath(dir),
-			JSON.stringify({
-				servers: typeof servers === "function" ? servers(as) : servers,
-			}),
-			"utf8",
-		);
-		wiring = createMcpExtension(double.host);
-	} finally {
-		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
-		else process.env[MCP_CONFIG_ENV] = prior;
-	}
+	const registry = typeof servers === "function" ? servers(as) : servers;
+	double.setSharedSettings({
+		servers: Object.fromEntries(
+			Object.entries(registry).map(([name, server]) => [
+				name,
+				settingsEntry(server as Record<string, unknown>),
+			]),
+		),
+	});
+	const wiring = await createMcpExtension(double.host);
 	if (wiring.perUserTools) double.declarePerUserTools();
 	double.registerServices(wiring.userServices);
 	const route = (suffix: string) => {
@@ -793,23 +825,74 @@ test("token storage retires and reconnects the caller's service with the new sec
 	}
 });
 
+test("CLI oauth reads the server from settings", async () => {
+	const as = await stubAs("settings-code");
+	const { dir } = await oauthSettingsDir(as.url, "acme", {
+		credentials: "shared",
+		sharedAuthority: "Synthetic shared test authority",
+	});
+	const prior = process.env.SIGRUN_CONFIG_DIR;
+	process.env.SIGRUN_CONFIG_DIR = dir;
+	let stdout = "";
+	let stderr = "";
+	const io = {
+		stdout: {
+			write: (chunk: string) => {
+				stdout += chunk;
+				return true;
+			},
+		} as unknown as NodeJS.WriteStream,
+		stderr: {
+			write: (chunk: string) => {
+				stderr += chunk;
+				return true;
+			},
+		} as unknown as NodeJS.WriteStream,
+	};
+	try {
+		// An unknown name fails naming the SETTINGS as the source.
+		expect(await runCli(["oauth", "nobody"], io)).toBe(1);
+		expect(stderr).toContain('no server named "nobody" in the MCP settings');
+
+		// The settings-carried server starts the flow: the printed authorize
+		// URL is the stub AS the settings file named. Paste the redirect to
+		// settle it (the CLI reads stdin; a paste line settles the code).
+		const { PassThrough } = await import("node:stream");
+		const stdin = new PassThrough();
+		const originalStdin = process.stdin;
+		Object.defineProperty(process, "stdin", { value: stdin, configurable: true });
+		try {
+			const running = runCli(["oauth", "acme", "--paste"], io);
+			await vi.waitFor(() => {
+				expect(stdout).toContain(`${as.url}/authorize`);
+			});
+			const redirectUri = stdout.match(/Redirect URI:\n\s+(\S+)/)?.[1];
+			expect(redirectUri).toBeDefined();
+			stdin.write(`${redirectUri}?code=settings-code\n`);
+			expect(await running).toBe(0);
+		} finally {
+			Object.defineProperty(process, "stdin", { value: originalStdin, configurable: true });
+		}
+		expect(as.exchanges).toHaveLength(1);
+		expect(as.exchanges[0].code).toBe("settings-code");
+		// The token landed in the config dir's token store.
+		expect(loadMcpTokens({ SIGRUN_CONFIG_DIR: dir }).acme.access_token).toMatch(
+			/^stub-token-/,
+		);
+	} finally {
+		if (prior === undefined) delete process.env.SIGRUN_CONFIG_DIR;
+		else process.env.SIGRUN_CONFIG_DIR = prior;
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("the CLI refuses per-user OAuth and names the extension start route", async () => {
 	const as = await stubAs("unused");
-	const { dir, env } = await oauthConfigDir(as.url, "acme");
-	const prior = process.env[MCP_CONFIG_ENV];
-	process.env[MCP_CONFIG_ENV] = env[MCP_CONFIG_ENV];
+	const { dir } = await oauthSettingsDir(as.url, "acme", { credentials: "user" });
+	const prior = process.env.SIGRUN_CONFIG_DIR;
+	process.env.SIGRUN_CONFIG_DIR = dir;
 	let stderr = "";
 	try {
-		const config = JSON.parse(
-			await (
-				await import("node:fs/promises")
-			).readFile(env[MCP_CONFIG_ENV]!, "utf8"),
-		) as { servers: Record<string, unknown> };
-		config.servers.acme = {
-			...(config.servers.acme as Record<string, unknown>),
-			credentials: "user",
-		};
-		await writeFile(env[MCP_CONFIG_ENV]!, JSON.stringify(config), "utf8");
 		const code = await runCli(["oauth", "acme"], {
 			stdout: { write: () => true } as unknown as NodeJS.WriteStream,
 			stderr: {
@@ -822,13 +905,92 @@ test("the CLI refuses per-user OAuth and names the extension start route", async
 		expect(code).toBe(1);
 		expect(stderr).toContain("/v1/ext/sigrun-mcp/oauth/acme/start");
 		expect(stderr).toContain("per-user");
-		expect(loadMcpTokens(env)).toEqual({});
+		expect(loadMcpTokens({ SIGRUN_CONFIG_DIR: dir })).toEqual({});
 	} finally {
-		if (prior === undefined) delete process.env[MCP_CONFIG_ENV];
-		else process.env[MCP_CONFIG_ENV] = prior;
+		if (prior === undefined) delete process.env.SIGRUN_CONFIG_DIR;
+		else process.env.SIGRUN_CONFIG_DIR = prior;
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+test("a failed legacy token rename leaves the file and never fails token reads", async () => {
+	const dir = await tempDir("sigrun-mcp-token-exdev-");
+	const legacyDir = await tempDir("sigrun-mcp-token-exdev-legacy-");
+	try {
+		const legacy = join(legacyDir, "mcp-tokens.json");
+		await writeFile(
+			legacy,
+			JSON.stringify({
+				acme: {
+					access_token: "legacy-token",
+					token_type: "Bearer",
+					obtained_at: 1,
+				},
+			}),
+			{ mode: 0o600 },
+		);
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		// ESM namespaces are not configurable, so spy on the module's
+		// function through the mocked module boundary.
+		vi.doMock("node:fs", async (importOriginal) => {
+			const actual = await importOriginal<typeof import("node:fs")>();
+			return {
+				...actual,
+				renameSync: () => {
+					throw Object.assign(new Error("cross-device link not permitted"), { code: "EXDEV" });
+				},
+			};
+		});
+		vi.resetModules();
+		const tokens = await import("../src/tokens.js");
+		const env = {
+			SIGRUN_CONFIG_DIR: dir,
+			SIGRUN_MCP_CONFIG: join(legacyDir, "mcp.json"),
+		};
+		// Both public entry points stay non-throwing; one warning total.
+		expect(tokens.loadMcpTokens(env)).toEqual({});
+		expect(tokens.loadMcpTokens(env)).toEqual({});
+		expect(warning).toHaveBeenCalledTimes(1);
+		expect(warning.mock.calls[0]?.[0]).toContain("leaving");
+		expect(existsSync(legacy)).toBe(true);
+		expect(existsSync(join(dir, "mcp-tokens.json"))).toBe(false);
+		vi.doUnmock("node:fs");
+		vi.resetModules();
+	} finally {
+		await cleanupDir(dir);
+		await cleanupDir(legacyDir);
+	}
+});
+
+test("a legacy token store beside mcp.json is renamed into the config dir", async () => {
+	const dir = await tempDir("sigrun-mcp-token-migration-");
+	const legacyDir = await tempDir("sigrun-mcp-token-legacy-");
+	try {
+		const legacy = join(legacyDir, "mcp-tokens.json");
+		await writeFile(
+			legacy,
+			JSON.stringify({
+				acme: {
+					access_token: "legacy-token",
+					token_type: "Bearer",
+					obtained_at: 1,
+				},
+			}),
+			{ mode: 0o600 },
+		);
+		const env = {
+			SIGRUN_CONFIG_DIR: dir,
+			SIGRUN_MCP_CONFIG: join(legacyDir, "mcp.json"),
+		};
+		expect(loadMcpTokens(env).acme.access_token).toBe("legacy-token");
+		expect(existsSync(legacy)).toBe(false);
+		expect(existsSync(join(dir, "mcp-tokens.json"))).toBe(true);
+		expect((await stat(join(dir, "mcp-tokens.json"))).mode & 0o777).toBe(0o600);
+	} finally {
+		await cleanupDir(dir);
+		await cleanupDir(legacyDir);
+	}
+});
+
 test("starting a flow proactively evicts every expired pending flow", () => {
 	let now = 1_000;
 	const flows = createUserOauthFlows(() => now);

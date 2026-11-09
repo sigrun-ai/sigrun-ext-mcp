@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Servers live in the extension's settings
+  (`settings/sigrun-mcp.json` + the `sigrun-mcp` secrets section), declared
+  as a JSON Schema via `host.settings.declare` and edited as generated
+  forms. `mcp.json`/`SIGRUN_MCP_CONFIG` are retired: a one-time import at
+  boot moves servers (secrets to the store) when settings have none, then
+  the file is ignored. Header/env values are `writeOnly` store-backed
+  secrets. Publishes the `mcp.servers` hook (name, resolved enabled,
+  exposure, tool exposure) for codemode's namespaces. The CLI
+  `sigrun-ext-mcp oauth <name>` reads servers from settings. Requires the
+  settings-rework core (`host.settings.declare`); this package carries no
+  `@sigrun/sigrun` runtime peer dependency.
 - peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.11.0).
 
 ## [0.2.3] - 2026-11-05

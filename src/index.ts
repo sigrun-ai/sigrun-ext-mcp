@@ -4,7 +4,6 @@ export type { McpWiring } from "./extension.js";
 export type { SigrunHost, UserService, ServiceSpec } from "./user-servers.js";
 export { connectMcpServer, McpClient } from "./client.js";
 export {
-	loadMcpConfig,
 	MCP_CONFIG_ENV,
 	parseMcpConfig,
 	resolveMcpConfigPath,
@@ -39,4 +38,4 @@ import { createMcpExtension, type McpWiring } from "./extension.js";
  * loader does not pass a host to optional/defaulted (length-zero) factories. */
 export default createMcpExtension satisfies (
 	host: import("./user-servers.js").SigrunHost,
-) => McpWiring;
+) => Promise<McpWiring>;

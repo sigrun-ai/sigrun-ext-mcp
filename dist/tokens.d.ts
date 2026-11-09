@@ -1,7 +1,8 @@
 /**
- * The OAuth token store (ruling 2): a JSON file BESIDE the resolved mcp.json
- * — `<resolved-config-dir>/mcp-tokens.json` — so the `SIGRUN_MCP_CONFIG`
- * override relocates tokens with config (a test / pod override moves both).
+ * The OAuth token store: `<sigrun-config-dir>/mcp-tokens.json`. Stores
+ * from before the settings rework lived beside the resolved mcp.json;
+ * the first read/write renames that legacy file here when no new store
+ * exists yet.
  *
  * Shape (one entry per configured server name):
  *   { "<server-name>": {
@@ -23,7 +24,9 @@ export interface McpStoredToken {
 }
 /** The whole token store: server name → token. */
 export type McpTokenStore = Record<string, McpStoredToken>;
-/** Resolve the token-store path for a given environment (beside config). */
+/** Resolve the token-store path for a given environment (in the sigrun
+ * config dir — settings rework, Task 11: mcp.json is retired, so tokens
+ * live beside the settings files). */
 export declare function resolveMcpTokenPath(env?: NodeJS.ProcessEnv): string;
 /** Parse and validate a token-store body. */
 export declare function parseMcpTokenStore(text: string, source: string): McpTokenStore;
