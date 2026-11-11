@@ -50,6 +50,21 @@ interface JsonRpcFrame {
 
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 
+/** A bounded error body for a failed POST — servers put the reason here
+ * (`{"error":{"message":"Session not found"}}`), so a bare status line
+ * hides the diagnosis. */
+async function bodySnippet(response: Response, limit = 200): Promise<string> {
+	const text = await response.text().catch(() => "");
+	return text.slice(0, limit);
+}
+
+/** Release a reply body we will not read (an unread body pins the socket). */
+function discardBody(response: Response): void {
+	response.body?.cancel().catch(() => {
+		// Already-closed streams cancel noisily; harmless.
+	});
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -561,6 +576,12 @@ class HttpTransport implements Transport {
 	#messageUrl: string | undefined;
 	/** Streamable HTTP session id (echoed on every request once seen). */
 	#sessionId: string | undefined;
+	/** How many `initialize` POSTs this transport has issued. Only the FIRST
+	 * one may negotiate the legacy transport (a later one is a session
+	 * recovery, where a 404 means the server is unusable, not "legacy"). */
+	#handshakes = 0;
+	/** The in-flight session recovery, shared by concurrent stale requests. */
+	#recovering: Promise<void> | undefined;
 	/** Legacy GET stream bookkeeping. */
 	#getController: AbortController | undefined;
 	#mode: "streamable" | "legacy" = "streamable";
@@ -601,8 +622,16 @@ class HttpTransport implements Transport {
 		return this.#post(frame);
 	}
 
-	async #post(frame: JsonRpcFrame): Promise<void> {
+	/** A stale session id (the server reaped it after its idle timeout, or
+	 * restarted): MCP answers 404 and the client must start a NEW session.
+	 * One recovery per send — the retried frame is not recovered again, so a
+	 * server that 404s everything cannot loop us. */
+	async #post(frame: JsonRpcFrame, recovered = false): Promise<void> {
 		const url = this.#messageUrl ?? this.#url;
+		const sentSession = this.#sessionId;
+		const isInitialize = frame.method === "initialize";
+		if (isInitialize && this.#mode === "streamable") this.#handshakes += 1;
+		const mayNegotiateLegacy = isInitialize && this.#handshakes === 1;
 		const body = JSON.stringify(frame);
 		const controller = new AbortController();
 		const abortOnClose = () => controller.abort();
@@ -619,27 +648,18 @@ class HttpTransport implements Transport {
 				this.#sessionId = sessionHeader;
 			}
 			if (response.status === 404 || response.status === 405) {
-				if (this.#mode === "streamable" && frame.method === "initialize") {
-					// The legacy negotiation point: only on the FIRST request.
-					// Later 404/405s are ordinary errors (below).
-					await this.#startLegacy();
-					// The initialize POST must now go to the legacy message
-					// endpoint; the endpoint event has set #messageUrl.
-					if (this.#messageUrl === undefined) {
-						throw new Error(
-							`mcp server "${this.#name}" legacy SSE stream announced no endpoint`,
-						);
-					}
-					return this.#post(frame);
-				}
-				throw new Error(
-					`mcp server "${this.#name}" POST ${url} failed: ${response.status} ${response.statusText}`,
+				return this.#rejected(
+					response,
+					frame,
+					url,
+					recovered,
+					sentSession,
+					mayNegotiateLegacy,
 				);
 			}
 			if (!response.ok) {
-				const snippet = (await response.text()).slice(0, 200);
 				throw new Error(
-					`mcp server "${this.#name}" POST ${url} failed: ${response.status} ${response.statusText} ${snippet}`.trim(),
+					`mcp server "${this.#name}" POST ${url} failed: ${response.status} ${response.statusText} ${await bodySnippet(response)}`.trim(),
 				);
 			}
 			// A notification needs no body processing; a request's reply may
@@ -703,6 +723,74 @@ class HttpTransport implements Transport {
 		} finally {
 			this.#closeHooks.delete(abortOnClose);
 		}
+	}
+
+	/** A 404/405 reply. Three shapes share the status: the legacy-transport
+	 * negotiation point (a server without streamable-HTTP support), an EXPIRED
+	 * SESSION id, and an ordinary error. */
+	async #rejected(
+		response: Response,
+		frame: JsonRpcFrame,
+		url: string,
+		recovered: boolean,
+		sentSession: string | undefined,
+		mayNegotiateLegacy: boolean,
+	): Promise<void> {
+		if (this.#mode === "streamable" && mayNegotiateLegacy) {
+			// The legacy negotiation point: only on the FIRST request. Later
+			// 404/405s are ordinary errors (below).
+			await this.#startLegacy();
+			// The initialize POST must now go to the legacy message endpoint;
+			// the endpoint event has set #messageUrl.
+			if (this.#messageUrl === undefined) {
+				throw new Error(
+					`mcp server "${this.#name}" legacy SSE stream announced no endpoint`,
+				);
+			}
+			return this.#post(frame, recovered);
+		}
+		// MCP: a 404 answering a request that carried a session id means the
+		// session is gone (an idle reap or a server restart). Start a new one
+		// and retry the request once. Only one recovery per send, so a server
+		// that 404s everything cannot loop us.
+		if (
+			!recovered &&
+			response.status === 404 &&
+			this.#mode === "streamable" &&
+			sentSession !== undefined &&
+			frame.method !== "initialize" &&
+			frame.method !== "notifications/initialized"
+		) {
+			discardBody(response);
+			try {
+				await this.#recoverSession(sentSession);
+			} catch (cause) {
+				throw new Error(
+					`mcp server "${this.#name}" session expired and re-initialize failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+				);
+			}
+			return this.#post(frame, true);
+		}
+		throw new Error(
+			`mcp server "${this.#name}" POST ${url} failed: ${response.status} ${response.statusText} ${await bodySnippet(response)}`.trim(),
+		);
+	}
+
+	/** Re-handshake after the server discarded our session. Single-flight,
+	 * and a caller whose stale id was already superseded returns immediately:
+	 * concurrent callers share ONE handshake rather than minting a session
+	 * each. */
+	async #recoverSession(staleSession: string): Promise<void> {
+		if (this.#recovering !== undefined) return this.#recovering;
+		if (this.#sessionId !== staleSession) return; // already recovered
+		const recovery = (async () => {
+			this.#sessionId = undefined;
+			await this.#engine.handshake();
+		})().finally(() => {
+			this.#recovering = undefined;
+		});
+		this.#recovering = recovery;
+		return recovery;
 	}
 
 	/** On the INITIAL POST's SSE response: read events until either the

@@ -122,6 +122,63 @@ function makeStreamableJson(): { server: Server; url: () => Promise<string>; obs
 	return { server, url: () => listen(server), observed };
 }
 
+/** A stateful streamable server whose session can be reaped on demand
+ * (the FastMCP 30-minute idle-timeout shape: an unknown session id gets a
+ * 404 JSON-RPC "Session not found", never the legacy 404/405 negotiation).
+ * The reaped id is deliberately reused as "sess-2" only via a fresh
+ * initialize, so a client that keeps stale state cannot pass by accident. */
+function makeStreamableJsonExpiring(): {
+	server: Server;
+	url: () => Promise<string>;
+	observed: Observed[];
+	expire: () => void;
+} {
+	const observed: Observed[] = [];
+	let liveSession: string | undefined;
+	let issued = 0;
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+		req.on("end", () => {
+			const frame = JSON.parse(body) as StubFrame;
+			observed.push({ method: frame.method ?? "?", id: frame.id, headers: req.headers });
+			if (frame.method === "initialize") {
+				issued += 1;
+				liveSession = `sess-${issued}`;
+				res.setHeader("content-type", "application/json");
+				res.setHeader("mcp-session-id", liveSession);
+				res.end(JSON.stringify(replyFrame(frame)));
+				return;
+			}
+			if (req.headers["mcp-session-id"] !== liveSession) {
+				res.writeHead(404, { "content-type": "application/json" });
+				res.end(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: null,
+						error: { code: -32600, message: "Session not found" },
+					}),
+				);
+				return;
+			}
+			if (frame.method === "notifications/initialized") {
+				res.writeHead(202).end();
+				return;
+			}
+			res.setHeader("content-type", "application/json");
+			res.end(JSON.stringify(replyFrame(frame)));
+		});
+	});
+	return {
+		server,
+		url: () => listen(server),
+		observed,
+		expire: () => {
+			liveSession = undefined;
+		},
+	};
+}
+
 function makeStreamableSse(): { server: Server; url: () => Promise<string>; observed: Observed[] } {
 	const observed: Observed[] = [];
 	const server = createServer((req, res) => {
@@ -192,6 +249,42 @@ test("streamable HTTP (JSON bodies): handshake, list, call, session echo", async
 		// The session id from the initialize response echoed on later requests.
 		const listCall = stub.observed.find((o) => o.method === "tools/list");
 		expect(listCall?.headers["mcp-session-id"]).toBe("sess-1");
+	} finally {
+		await close(stub.server);
+	}
+});
+
+test("streamable HTTP: a reaped session (404) re-handshakes once and retries", async () => {
+	const stub = makeStreamableJsonExpiring();
+	const url = await stub.url();
+	try {
+		const client = await connectMcpServer("stub", { url });
+		try {
+			expect((await client.listTools()).map((t) => t.name)).toEqual(["echo", "add"]);
+			// The server drops the session while the client keeps its id — the
+			// production shape: sigrun connects at boot, searmcp reaps the
+			// session after 30 idle minutes, the next call is a stale-id POST.
+			stub.expire();
+			const result = await client.callTool("add", { a: 2, b: 40 });
+			expect(result.content?.[0]?.text).toBe("42");
+			// Still usable after the recovery (the retry re-keyed the session).
+			expect((await client.listTools()).map((t) => t.name)).toEqual(["echo", "add"]);
+			// A concurrent burst after another reap shares ONE recovery
+			// handshake — a session per call would leak transports.
+			stub.expire();
+			const burst = await Promise.all([
+				client.callTool("add", { a: 1, b: 1 }),
+				client.callTool("add", { a: 2, b: 2 }),
+				client.callTool("add", { a: 3, b: 3 }),
+			]);
+			expect(burst.map((r) => r.content?.[0]?.text)).toEqual(["2", "4", "6"]);
+		} finally {
+			client.close();
+		}
+		// Exactly one recovery handshake per reap — not one per failed request.
+		expect(stub.observed.filter((o) => o.method === "initialize")).toHaveLength(3);
+		const retried = stub.observed.filter((o) => o.method === "tools/call").at(-1);
+		expect(retried?.headers["mcp-session-id"]).toBe("sess-3");
 	} finally {
 		await close(stub.server);
 	}
@@ -365,6 +458,57 @@ test("CRLF-framed SSE replies parse (live servers emit \\r\\n)", async () => {
 		} finally {
 			client.close();
 		}
+	} finally {
+		await close(server);
+	}
+});
+
+test("streamable HTTP: a server that always 404s is not retried in a loop", async () => {
+	// The no-loop guard: one recovery attempt per send, then a plain error.
+	let posts = 0;
+	let inits = 0;
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+		req.on("end", () => {
+			const frame = JSON.parse(body) as StubFrame;
+			posts += 1;
+			if (frame.method === "initialize") {
+				inits += 1;
+				res.setHeader("content-type", "application/json");
+				res.setHeader("mcp-session-id", `sess-${inits}`);
+				res.end(JSON.stringify(replyFrame(frame)));
+				return;
+			}
+			if (frame.method === "notifications/initialized") {
+				res.writeHead(202).end();
+				return;
+			}
+			// Every post-initialize request/reply is rejected as a dead session,
+			// including the ones carrying a freshly minted id.
+			res.writeHead(404, { "content-type": "application/json" });
+			res.end(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: null,
+					error: { code: -32600, message: "Session not found" },
+				}),
+			);
+		});
+	});
+	const url = await listen(server);
+	try {
+		const client = await connectMcpServer("stub", { url });
+		try {
+			await expect(client.callTool("add", { a: 1, b: 2 })).rejects.toThrow(/Session not found/);
+		} finally {
+			client.close();
+		}
+		// Bounded: initialize, initialized, the failed call, then the recovery
+		// pair (initialize + initialized) and the one retried call — never a
+		// runaway retry.
+		expect(inits).toBe(2);
+		expect(posts).toBe(6);
 	} finally {
 		await close(server);
 	}

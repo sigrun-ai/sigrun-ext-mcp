@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Remote (streamable HTTP) servers recover from an expired session. A
+  stateful server reaps idle sessions (FastMCP's default is 30 minutes) and
+  then answers every later POST with `404 Session not found`; the client
+  kept using the dead `mcp-session-id` forever, so the server stayed broken
+  for the life of the process — searmcp (SearXNG search) failed this way on
+  every call after the first half-hour of quiet while crawl4ai, whose
+  endpoint is stateless, kept working. A 404 on a session-bearing request
+  now re-runs the handshake once (single-flight, so a burst of concurrent
+  calls shares one new session) and retries the request; the legacy
+  transport negotiation is still confined to the first `initialize`, so a
+  recovery 404 cannot be mistaken for a legacy server.
+
 ## [0.2.5] - 2026-11-08
 
 - CI: grant actions: read to the release workflow (the release-test skip lookup). No code change.
