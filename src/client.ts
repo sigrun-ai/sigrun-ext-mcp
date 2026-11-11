@@ -242,7 +242,7 @@ class McpEngine implements McpClient {
 			{
 				protocolVersion: MCP_PROTOCOL_VERSION,
 				capabilities: {},
-				clientInfo: { name: "sigrun-ext-mcp", version: "0.2.0" },
+				clientInfo: { name: "sigrun-ext-mcp", version: "0.3.1" },
 			},
 			undefined,
 		)) as { protocolVersion?: string } | undefined;

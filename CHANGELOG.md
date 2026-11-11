@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.1] - 2026-11-10
 
 ### Fixed
 
@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now re-runs the handshake once (single-flight, so a burst of concurrent
   calls shares one new session) and retries the request; the legacy
   transport negotiation is still confined to the first `initialize`, so a
-  recovery 404 cannot be mistaken for a legacy server.
+  recovery 404 cannot be mistaken for a legacy server. A failed POST's
+  error also carries the server's response body now — that is where a
+  server explains itself (`Session not found`), and throwing it away is
+  what made this look like an unexplained 404.
 
 ## [0.2.5] - 2026-11-08
 
