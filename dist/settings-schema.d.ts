@@ -43,11 +43,12 @@ export declare const MCP_SETTINGS_JSON_SCHEMA: {
                     };
                     readonly users: {
                         readonly type: "array";
+                        readonly minItems: 1;
                         readonly items: {
                             readonly type: "string";
                             readonly minLength: 1;
                         };
-                        readonly description: "Allowlist of directory users for a shared entry.";
+                        readonly description: "Allowlist of directory users for a shared entry. Empty is unset (all users); disable the server to deny everyone.";
                     };
                     readonly availability: {
                         readonly oneOf: readonly [{
@@ -165,6 +166,7 @@ export declare const MCP_SETTINGS_JSON_SCHEMA: {
                             };
                             readonly scopes: {
                                 readonly type: "array";
+                                readonly minItems: 1;
                                 readonly items: {
                                     readonly type: "string";
                                 };
@@ -238,11 +240,12 @@ export declare const MCP_USER_JSON_SCHEMA: {
                     };
                     readonly users: {
                         readonly type: "array";
+                        readonly minItems: 1;
                         readonly items: {
                             readonly type: "string";
                             readonly minLength: 1;
                         };
-                        readonly description: "Allowlist of directory users for a shared entry.";
+                        readonly description: "Allowlist of directory users for a shared entry. Empty is unset (all users); disable the server to deny everyone.";
                     };
                     readonly availability: {
                         readonly oneOf: readonly [{
@@ -360,6 +363,7 @@ export declare const MCP_USER_JSON_SCHEMA: {
                             };
                             readonly scopes: {
                                 readonly type: "array";
+                                readonly minItems: 1;
                                 readonly items: {
                                     readonly type: "string";
                                 };

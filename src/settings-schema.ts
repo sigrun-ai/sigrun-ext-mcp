@@ -56,8 +56,10 @@ const commonFields = {
 	},
 	users: {
 		type: "array",
+		minItems: 1,
 		items: { type: "string", minLength: 1 },
-		description: "Allowlist of directory users for a shared entry.",
+		description:
+			"Allowlist of directory users for a shared entry. Empty is unset (all users); disable the server to deny everyone.",
 	},
 	availability: availabilityChoice,
 	enabled: {
@@ -96,7 +98,7 @@ const oauthGroup = {
 		},
 		tokenUrl: { type: "string", description: "The token endpoint (code exchange)." },
 		clientId: { type: "string", description: "The registered OAuth client id." },
-		scopes: { type: "array", items: { type: "string" } },
+		scopes: { type: "array", minItems: 1, items: { type: "string" } },
 		codeChallengeMethod: {
 			type: "string",
 			description: 'Only "S256" is implemented.',

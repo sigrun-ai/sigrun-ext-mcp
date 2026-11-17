@@ -47,7 +47,7 @@ interface McpServerCommon {
     readonly credentials?: McpCredentials;
     /** Required for shared entries: why lending this authority is acceptable. */
     readonly sharedAuthority?: string;
-    /** Optional allowlist for a shared entry; rejected for user credentials. */
+    /** Optional allowlist for a shared entry; empty means unset (all users). */
     readonly users?: readonly string[];
     /** Absent user settings mean enabled for all, disabled for opt-in. */
     readonly availability?: McpAvailability;

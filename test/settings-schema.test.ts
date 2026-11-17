@@ -172,6 +172,126 @@ describe("MCP settings schema", () => {
 		).toThrow(/contradict/);
 	});
 
+	test("an empty users list on a per-user server parses as unset", () => {
+		const config = parseMcpSettings({
+			servers: {
+				acme: {
+					url: "https://acme.example.invalid/mcp",
+					credentials: "user",
+					users: [],
+				},
+			},
+		});
+		expect(config.servers.acme.users).toBeUndefined();
+	});
+
+	test("an empty users list on a shared server opens it to every user", () => {
+		const config = parseMcpSettings({
+			servers: {
+				acme: {
+					url: "https://acme.example.invalid/mcp",
+					credentials: "shared",
+					sharedAuthority: "Synthetic operator-approved shared test authority",
+					users: [],
+				},
+			},
+		});
+		expect(config.servers.acme.users).toBeUndefined();
+	});
+
+	test("a blank oauth group parses as no oauth", () => {
+		const config = parseMcpSettings({
+			servers: {
+				acme: {
+					command: "node",
+					args: ["server.mjs"],
+					oauth: {
+						authorizeUrl: "",
+						tokenUrl: "",
+						clientId: "",
+						scopes: [],
+						codeChallengeMethod: "",
+					},
+				},
+			},
+		});
+		const server = config.servers.acme;
+		expect("command" in server ? server.oauth : undefined).toBeUndefined();
+	});
+
+	test("a partly filled oauth group still fails loud", () => {
+		expect(() =>
+			parseMcpSettings({
+				servers: {
+					acme: {
+						command: "node",
+						args: ["server.mjs"],
+						oauth: { authorizeUrl: "https://a.example.invalid" },
+					},
+				},
+			}),
+		).toThrow(
+			/server "acme" oauth needs string "authorizeUrl", "tokenUrl" and "clientId"/,
+		);
+	});
+
+	test("the form schema drops untouched lists", () => {
+		const rows = MCP_SETTINGS_JSON_SCHEMA.properties.servers.additionalProperties;
+		expect(rows.properties.users.minItems).toBe(1);
+		expect(rows.properties.oauth.properties.scopes.minItems).toBe(1);
+	});
+
+	test("the 2026-11-17 corrupted settings shape parses as unset", () => {
+		const config = parseMcpSettings({
+			servers: {
+				searxng: {
+					url: "https://search.example.invalid/mcp",
+					"oauth.authorizeUrl": "",
+					"oauth.tokenUrl": "",
+					"oauth.clientId": "",
+					"oauth.scopes": "",
+					"oauth.codeChallengeMethod": "",
+					users: [],
+				},
+				crawl4ai: {
+					url: "https://crawler.example.invalid/mcp/sse",
+					"oauth.authorizeUrl": "",
+					"oauth.tokenUrl": "",
+					"oauth.clientId": "",
+					"oauth.scopes": "",
+					"oauth.codeChallengeMethod": "",
+					users: [],
+				},
+				"mcp-gateway": {
+					url: "https://gateway.example.invalid/mcp",
+					credentials: "user",
+					"oauth.authorizeUrl": "",
+					"oauth.tokenUrl": "",
+					"oauth.clientId": "",
+					"oauth.scopes": "",
+					"oauth.codeChallengeMethod": "",
+					users: [],
+				},
+			},
+		});
+		expect(Object.keys(config.servers)).toEqual(["searxng", "crawl4ai", "mcp-gateway"]);
+		for (const server of Object.values(config.servers)) expect(server.users).toBeUndefined();
+		const stdio = parseMcpSettings({
+			servers: {
+				local: {
+					command: "node",
+					args: ["server.mjs"],
+					"oauth.authorizeUrl": "",
+					"oauth.tokenUrl": "",
+					"oauth.clientId": "",
+					users: [],
+				},
+			},
+		}).servers.local;
+		expect("command" in stdio ? stdio.oauth : undefined).toBeUndefined();
+		expect(config.servers["mcp-gateway"].credentials).toBe("user");
+	});
+
 	test("server name rules survive the settings path", () => {
 		for (const name of ["servers", "u_acme", "acme.tools", "acme/tools"]) {
 			expect(() =>
