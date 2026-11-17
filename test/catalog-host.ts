@@ -217,15 +217,20 @@ export function createCatalogHost(options: {
 			declare: (decl: {
 				readonly schema: Readonly<Record<string, unknown>>;
 				readonly userSchema?: Readonly<Record<string, unknown>>;
-			}) => ({
-				get: async () => {
+			}) => {
+				const get = async () => {
 					const checked = checkStoredSettings(
 						decl.schema,
 						Object.fromEntries(shared.settings),
 					).value;
 					return fillSecrets(decl.schema, checked, [], shared.secrets) as Record<string, unknown>;
-				},
-				user: (user: string) => ({
+				};
+				return {
+					get,
+					// This schema declares no per-user overrides, so the effective
+					// system settings are the same checked shared settings.
+					effective: get,
+					user: (user: string) => ({
 					get: async () => {
 						if (decl.userSchema === undefined) {
 							throw new Error("settings.userSchema is not declared");
@@ -234,9 +239,10 @@ export function createCatalogHost(options: {
 							decl.userSchema,
 							{ ...(settings.get(user) ?? {}) },
 						).value;
-					},
-				}),
-			}),
+						},
+					}),
+				};
+			},
 		},
 		users: {
 			list: async () => shared.users,
