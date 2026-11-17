@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Empty `users` allowlists now mean unset (all users); use `enabled: false`
+  to deny everyone. Auth groups left blank by a settings form are treated
+  as absent, while partly-filled OAuth configuration still fails loudly.
+- Sync the structural settings mirror with core's `effective(user)`
+  contract; this is a type-surface change only.
+
 ## [0.3.1] - 2026-11-10
 
 ### Fixed

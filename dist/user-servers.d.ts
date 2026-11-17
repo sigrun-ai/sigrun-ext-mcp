@@ -32,6 +32,7 @@ export interface SettingsDeclarationMirror {
 }
 export interface DeclaredSettingsMirror {
     get(): Promise<Record<string, unknown>>;
+    effective(user: string): Promise<Record<string, unknown>>;
     user(user: string): {
         get(): Promise<Record<string, unknown>>;
     };

@@ -120,7 +120,7 @@ interface McpServerCommon {
 	readonly credentials?: McpCredentials;
 	/** Required for shared entries: why lending this authority is acceptable. */
 	readonly sharedAuthority?: string;
-	/** Optional allowlist for a shared entry; rejected for user credentials. */
+	/** Optional allowlist for a shared entry; empty means unset (all users). */
 	readonly users?: readonly string[];
 	/** Absent user settings mean enabled for all, disabled for opt-in. */
 	readonly availability?: McpAvailability;
@@ -339,15 +339,24 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 				`mcp config ${source}: server "${name}" requires a non-empty sharedAuthority when credentials are "shared"`,
 			);
 		}
-		if (entry.users !== undefined) {
+		// Settings forms may submit an untouched list as []. An empty
+		// allowlist is unset (all users), never allow-nobody; enabled: false
+		// is the explicit way to deny everyone. Normalize before the
+		// cross-field rule so this also repairs a per-user row's users: [].
+		// This belongs in parseMcpConfig: parseMcpSettings delegates here,
+		// and the legacy-file parser has the same empty-means-unset rule.
+		const users = Array.isArray(entry.users) && entry.users.length === 0
+			? undefined
+			: entry.users;
+		if (users !== undefined) {
 			if (credentials !== "shared") {
 				throw new Error(
 					`mcp config ${source}: server "${name}" users is only valid with credentials "shared"`,
 				);
 			}
 			if (
-				!Array.isArray(entry.users) ||
-				entry.users.some(
+				!Array.isArray(users) ||
+				users.some(
 					(user) => typeof user !== "string" || user.trim() === "",
 				)
 			) {
@@ -427,9 +436,7 @@ export function parseMcpConfig(text: string, source: string): McpConfig {
 			...(entry.sharedAuthority === undefined
 				? {}
 				: { sharedAuthority: entry.sharedAuthority as string }),
-			...(entry.users === undefined
-				? {}
-				: { users: entry.users as string[] }),
+			...(users === undefined ? {} : { users: users as string[] }),
 		} as const;
 		// The common optionals first, then the transport arm's own fields —
 		// the union stays discriminable by "command" vs "url" presence.
@@ -470,11 +477,24 @@ function parseOauthEntry(
 	value: unknown,
 	source: string,
 	name: string,
-): McpOAuthConfig {
+): McpOAuthConfig | undefined {
 	if (!isRecord(value)) {
 		throw new Error(
 			`mcp config ${source}: server "${name}" oauth must be an object`,
 		);
+	}
+	// A generated form can leave an entire OAuth group blank. Treat only
+	// that group as absent; every partly-filled or wrong-typed group still
+	// takes the existing fail-loud validation below.
+	if (
+		(value.authorizeUrl === undefined || value.authorizeUrl === "") &&
+		(value.tokenUrl === undefined || value.tokenUrl === "") &&
+		(value.clientId === undefined || value.clientId === "") &&
+		(value.scopes === undefined ||
+			(Array.isArray(value.scopes) && value.scopes.length === 0)) &&
+		(value.codeChallengeMethod === undefined || value.codeChallengeMethod === "")
+	) {
+		return undefined;
 	}
 	if (
 		typeof value.authorizeUrl !== "string" ||
