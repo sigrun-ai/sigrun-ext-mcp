@@ -69,8 +69,10 @@ to that location; an already-present new store wins.
   user's agent the admin's credential for that service; the settings
   section displays this reason and warning beside the server.
 - `users` — optional string allowlist for a shared server. Only those
-  users may call its tools; this field is invalid for user-credential
-  servers. Ownerless calls fail closed.
+  users may call its tools. A non-empty list is valid only with
+  `credentials: "shared"`; an empty list means unset (all users) on any
+  server. To deny everyone, set `enabled: false`. Ownerless calls fail
+  closed.
 - `availability` — `"all"` (default) or `"opt-in"`. The per-user settings
   section stores each server's enablement as a flat boolean keyed by its
   bare server name. `"all"` starts enabled; `"opt-in"` starts disabled.

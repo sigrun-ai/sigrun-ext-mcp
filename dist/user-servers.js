@@ -1,6 +1,8 @@
 /** Per-user catalog lifecycle and the structural sigrun host contract.
- * This package mirrors the host types instead of depending on sigrun, so it
- * remains independently buildable and installable. */
+ * `SigrunHost` below is a NARROW mirror of core's host (only the members
+ * this extension uses, so test doubles stay small). It is not a
+ * dependency boundary: test/host-conformance.test.ts asserts core's real
+ * `@sigrun/sigrun/extension` types satisfy it, so drift fails typecheck. */
 import { Type } from "typebox";
 import { defineTool, } from "@earendil-works/pi-durable";
 import { connectMcpServer, } from "./client.js";

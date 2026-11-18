@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- README: the `users` allowlist entry now states the 0.4.0 semantics (an
+  empty list means unset on any server; a non-empty list requires
+  `credentials: "shared"`).
+- The narrow host-type mirror is now checked against core's real
+  `@sigrun/sigrun/extension` types at typecheck (no runtime change).
+
 ## [0.4.0] - 2026-11-17
 
 ### Changed

@@ -227,9 +227,15 @@ export function createCatalogHost(options: {
 				};
 				return {
 					get,
-					// This schema declares no per-user overrides, so the effective
-					// system settings are the same checked shared settings.
-					effective: get,
+					// No per-user overrides are modelled: `effective` equals the
+					// checked shared settings. Refuse a schema that declares any
+					// overridable field rather than silently ignoring its overrides.
+					effective: async () => {
+						if (JSON.stringify(decl.schema).includes('"x-sigrun-overridable"')) {
+							throw new Error("catalog-host: effective() does not model x-sigrun-overridable overrides");
+						}
+						return await get();
+					},
 					user: (user: string) => ({
 					get: async () => {
 						if (decl.userSchema === undefined) {
