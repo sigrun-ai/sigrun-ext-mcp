@@ -226,7 +226,7 @@ export async function discoverMcpTools(
 								: [{ type: "text" as const, text: JSON.stringify(result) }],
 						isError: result.isError === true,
 						// SAFETY: MCP results are JSON-compatible protocol values.
-						details: result as unknown as import("@earendil-works/chord").JsonValue,
+						details: result as unknown as import("@earendil-works/chord/json").JsonValue,
 					};
 				},
 			}),
