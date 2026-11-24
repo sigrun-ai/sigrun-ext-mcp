@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The narrow host-type mirror is now checked against core's real
   `@sigrun/sigrun/extension` types at typecheck (no runtime change).
 
+## [0.5.0] - 2026-11-24
+
+### Changed
+
+- pi-durable 1.6.0 (and the chord 1.6.0 it pulls in). chord moved `Context`,
+  `Draft`, `JsonValue` and `copyJson` off its root into
+  `@earendil-works/chord/context`, `/delta` and `/json`, so imports point
+  there; a tool's `execute()` may now return a `ToolPark` instead of a
+  result. The declared `@earendil-works/*` peers are raised to `~1.6.0`.
+- Code-mode grouping: pi-durable 1.6.0 groups a code-mode tool by the
+  `namespace` its own extension declares, so this extension's tools all
+  share the one `mcp` namespace ext-codemode declares. Per-server prompt
+  headings are gone; each tool name keeps its `<server>/<tool>` prefix.
+
 ## [0.4.0] - 2026-11-17
 
 ### Changed
